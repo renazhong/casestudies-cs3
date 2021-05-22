@@ -1,0 +1,302 @@
+---
+title: "Case Study 3"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+```{r packages}
+library(FedData)
+pkg_test("tidyverse")
+pkg_test("plyr")
+pkg_test("dplyr")
+pkg_test("ggplot2")
+pkg_test("patchwork")
+pkg_test("tidyverse")
+pkg_test("lubridate")
+pkg_test("usmap")
+pkg_test("aod")
+pkg_test("broom")
+pkg_test("knitr")
+pkg_test("plotROC")
+pkg_test("formattable")
+```
+
+```{r load-data}
+##load data
+total <- readRDS("total-data.rds")
+total <- total[ ,c("voted", "status_cd", "race_code", "ethnic_code", "birth_age", "drivers_lic", "cong_dist_abbrv", "voter_status_desc", "reason_cd", "voted_party_cd", "birth_year", "voter_status_reason_desc", "county_desc")]
+```
+
+### Introduction
+
+
+  As the 2020 election nears, Joe Biden (former Vice President under the Obama administration) and Donald Trump (current President) are neck and neck in the polls. This means that the outcomes of swing states -- states where the two major political parties have similar levels of support among voters--  will be pivotal in determining our next president and the Senate Majority. North Carolina has 15 out of the 538 votes in the electoral college and is historically a swing state. In 2008, Barack Obama (Democrat) won North Carolina’s votes by a margin of 0.3 percentage points; in 2012, Mitt Romney (Republican) won the vote by 2 percentage points, and in 2016, Trump (Republican) won the vote by 3.6 percentage points (1). There are 13 congressional districts within North Carolina, so each district gets one vote in the electoral college as the 2 state senators get one vote each, totalling 15 votes. Three out of the 13 congressional districts are currently represented by Democrats, and the remaining 10 by Republicans. However, some of these districts have been known to vote the same as the entire country (i.e. if a Democrat is leading the race these districts tend to vote democrat and vice versa) (2). 
+
+	Voting polls, which predict who will win the presidential, senate, and house of representative elections and predict what margin they will win by, are constantly updated prior to the races. The issue with polls, however, is that the margin of error is typically very large, and the samples are not representative of the true population of voters (3) . In the 2016 polls, Hillary Clinton was predicted to win by a large margin. After that did not occur, the public is more weary to trust early voting polls.
+
+  An alternate method to predict who will win these races is predicting who will show up to the polls and then using this information combined with records of how these voters have voted in the past to predict the election outcomes. We aim to use North Carolina voter registration data and historical records of which of those registered voters actually did vote in the 2016 and 2018 elections to predict which voters will vote in North Carolina in 2020. 
+
+  In Section 2 of our report we will present and describe the data we used in these predictions along with the exploratory data analysis we conducted. In Section 3 of our report we explain how we handled missing data and present the methods we used to create our logistic regression prediction model. In Section 4 we provide the results of our logistic regression model. In Section 5, we speak to the validity of our model and the sensitive analysis that we conducted and finally, in Section 6, we discuss limitations and further investigations.
+  
+  
+### Data
+
+
+
+```{r data}
+vars <- data.frame("Variable" = c("County", "Congressional District", "Voter Registration Number", "Voter Status", "Voter Status Reason", "Zip Code", "Race", "Ethnicity", "Age","Birth Year", "Drivers Liscense", "Registration Date", "Birth State", "Political Party", "Voted in 2016 or 2018" ), "Categories" = c("The 100 Counties in NC", "The 13 Congressional Districts in NC", "Number for each registered voter, not all unique", "Active, Inactive, Removed, Denied", "32 Reasons for being categorized as each status, see Appendix", "The 856 zip codes in NC", "White, Asian, Black or African American, American Indian or Alaska Native, Native Hawaiian or Pacific Islander, Two or More Races, Other, Undesignated", "Hispanic or Latino, Not Hispanic or Not Latino, Undesignated", "18 years and older", "Year of Birth of registered voters, no years after 2000", "Yes, No", "Most recent date that voter registered or updated registration informatio n", "50 U.S staes, Washington, D.C., U.S. Territories, NA", "Republican, Democrat, Unaffiliated", "Yes, No"))
+
+
+formattable(vars, align= c("l", "l"), list('Status' = formatter("span", style = ~ style(color = "grey",font.weight = "bold"))))
+```
+
+```{r mutations}
+# make all NA values in total for voter is NA equal to 1
+total <- total %>%
+  mutate(voted = case_when(
+    !is.na(voted) ~ voted,
+    is.na(voted) ~ 1
+  ))
+##make age an int 
+##make age an int 
+total<-total%>%
+  mutate(birth_age = as.numeric(birth_age))
+## imputing age NA with average age
+## max age is 267 and there are 2561 voters over 100.. impute all people with ages over threshold to mean age of dataset
+age_abnormal_threshold <-95
+total%>%
+  filter(birth_age<age_abnormal_threshold)%>%
+  summarise(median.age=median(birth_age), mean.age = mean(birth_age), min(birth_age), max(birth_age))
+##fill in ages >95 with average age of 50 
+real.mean.age <- total%>%
+  filter(birth_age<95)%>%
+  summarise(mean(birth_age))
+real.mean.age<-as.numeric(real.mean.age)
+total$birth_age[total$birth_age >95] <- real.mean.age
+
+
+total <- total %>%
+  filter(birth_year <= 2000)
+
+##remove deceased voters AND voters that moved and duplicate entries if they moved from county they can have NA district
+total<-total%>%
+  filter(voter_status_reason_desc != "DECEASED", voter_status_reason_desc != "MOVED FROM STATE", voter_status_reason_desc != "DUPLICATE", voter_status_desc != "TEMPORARY")
+
+## assign voters that mmoved counties to fake congressional district 0
+total$cong_dist_abbrv[total$voter_status_reason_desc == "MOVED FROM COUNTY"] <- 0
+
+## fill in missing congressional districts -- done by researching new districting (have not completed all)
+total$cong_dist_abbrv[total$county_desc == "BUNCOMBE"] <- 11
+total$cong_dist_abbrv[total$county_desc == "ALLEGHANY"] <- 5
+total$cong_dist_abbrv[total$county_desc == "DAVIDSON"] <- 13
+total$cong_dist_abbrv[total$county_desc == "BUNCOMBE"] <- 11
+total$cong_dist_abbrv[total$county_desc == "CLAY"] <- 11
+total$cong_dist_abbrv[total$county_desc == "POLK"] <- 11
+total$cong_dist_abbrv[total$county_desc == "CALDWELL"] <- 5
+total$cong_dist_abbrv[total$county_desc == "VANCE"] <- 1
+total$cong_dist_abbrv[total$county_desc == "RICHMOND"] <- 9
+total$cong_dist_abbrv[total$county_desc == "MECKLENBURG"] <- 12
+total$cong_dist_abbrv[total$county_desc == "ROBESON"] <- 9
+total$cong_dist_abbrv[total$county_desc == "CUMBERLAND"] <- 8
+total$cong_dist_abbrv[total$county_desc == "CABARRUS"] <- 8
+total$cong_dist_abbrv[total$county_desc == "ROWAN"] <- 13
+total$cong_dist_abbrv[total$county_desc == "JOHNSTON"] <- 7
+total$cong_dist_abbrv[total$county_desc == "COLUMBUS"] <- 7
+total$cong_dist_abbrv[total$county_desc == "BLADEN"] <- 7 
+total$cong_dist_abbrv[total$county_desc == "DURHAM"] <- 4
+total$cong_dist_abbrv[total$county_desc == "CARTERET"] <- 3
+total$cong_dist_abbrv[total$county_desc == "CHATHAM"] <- 4
+total$cong_dist_abbrv[total$county_desc == "RANDOLPH"] <- 6
+total$cong_dist_abbrv[total$county_desc == "GUILFORD"] <- 6
+total$cong_dist_abbrv[total$county_desc == "CRAVEN"] <- 3
+total$cong_dist_abbrv[total$county_desc == "DUPLIN"] <- 3
+total$cong_dist_abbrv[total$county_desc == "GRANVILLE"] <- 4
+total$cong_dist_abbrv[total$county_desc == "HALIFAX"] <- 1
+total$cong_dist_abbrv[total$county_desc == "NORTHAMPTON"] <- 1
+total$cong_dist_abbrv[total$county_desc == "MONTGOMERY"] <- 8
+total$cong_dist_abbrv[total$county_desc == "ONSLOW"] <- 3
+total$cong_dist_abbrv[total$county_desc == "ORANGE"] <- 4
+total$cong_dist_abbrv[total$county_desc == "PAMLICO"] <- 3
+total$cong_dist_abbrv[total$county_desc == "PENDER"] <- 7
+total$cong_dist_abbrv[total$county_desc == "PERQUIMANS"] <- 3
+total$cong_dist_abbrv[total$county_desc == "PITT"] <- 1
+total$cong_dist_abbrv[total$county_desc == "RUTHERFORD"] <- 11
+total$cong_dist_abbrv[total$county_desc == "STANLY"] <- 8
+total$cong_dist_abbrv[total$county_desc == "YADKIN"] <- 10
+total$cong_dist_abbrv[total$county_desc == "ANSON"] <- 9
+total$cong_dist_abbrv[total$county_desc == "BEAUFORT"] <- 3
+total$cong_dist_abbrv[total$county_desc == "BERTIE"] <- 1
+total$cong_dist_abbrv[total$county_desc == "BRUNSWICK"] <- 7
+total$cong_dist_abbrv[total$county_desc == "CAMDEN"] <- 11
+total$cong_dist_abbrv[total$county_desc == "AVERY"] <- 5
+total$cong_dist_abbrv[total$county_desc == "CASWELL"] <- 13
+total$cong_dist_abbrv[total$county_desc == "CATAWBA"] <- 10
+total$cong_dist_abbrv[total$county_desc == "CHEROKEE"] <- 11
+
+
+
+total$birth_age <- unlist(total$birth_age)
+
+#fill in missing party code/description with unaffiliated
+total$voted_party_cd[is.na(total$voted_party_cd)] <- "UNA"
+
+total <- total %>%
+  filter(!status_cd %in% c('D','R'))
+```
+
+```{r eda-1, fig.align='center', fig.width=4, fig.height=4, fig.cap="Map of North Carolina broken down by counties and their corresponding votes"}
+fips <- data.frame(count = count(total$county_desc), fips = 0)
+fips$fips <- fips("NC", fips$count.x)
+
+p1<- plot_usmap(regions = "counties", include = "NC", 
+           data = fips, values = "count.freq") +
+  labs(title = "NC Voter Info", subtitle = "The number of voters from each county in North Carolina") +
+  scale_fill_continuous(low = "white", high = "blue", name = "County Voters", label = scales::comma) + 
+  theme(legend.position = "right")
+p1
+```
+
+```{r variables-filled-with-voted, out.width="49%",out.height="49%",fig.show='hold',fig.align='center', fig.cap="Predictor variables and their relationships with the response variable, voted"}
+## congress districts voted vs not
+p2<- ggplot(total, aes(x = cong_dist_abbrv), fill = voted) +
+  geom_bar() +
+  labs(title = "Distribution of Congressional\nDistrict Abbreviations", x = "Congressional District Abbreviations", y = "Frequency", fill = "Voted") +
+  scale_fill_discrete()
+
+##dist of status code
+p3<- ggplot(total, aes(voter_status_desc)) +
+  geom_bar(aes(fill = as.factor(voted))) +
+  labs(title = "Distribution of Status Code", x = "Status Code", y = "Frequency", fill = "Voted")+
+  scale_fill_discrete()
+
+## dist of races
+p4<- ggplot(total, aes(race_code)) +
+  geom_bar(aes(fill = as.factor(voted))) +
+  labs(title = "Distribution of Race Codes", x = "Race Codes", y = "Frequency", fill = "Voted")+
+  scale_fill_discrete()
+
+##dist of ethnicity
+p5<- ggplot(total, aes(ethnic_code)) +
+  geom_bar(aes(fill = as.factor(voted))) +
+  labs(title = "Distribution of Ethnic Codes", x = "Ethnic Code", y = "Frequency", fill = "Voted")+
+  scale_fill_discrete()
+
+##dist of drivers liscense
+p6<- ggplot(total, aes(x = as.factor(drivers_lic))) +
+  geom_bar(aes(fill = as.factor(voted))) +
+  labs(title = "Distribution of Whether One Has A Driver's License", x = "Yes or No", y = "Frequency", fill = "Voted") +
+  scale_fill_discrete()
+
+gridExtra::grid.arrange((p2+p3)/(p4+p5)/(p6))
+```
+
+```{r eda-with-race-fill, fig.height=4, fig.width=4,fig.show='hold',fig.align='center', fig.cap="Predictor variables and their relationship with race code"}
+
+p7<-ggplot(total, aes(x = birth_age,  y= voter_status_desc, fill = race_code)) + #don't know what the party codes are
+  geom_bar(stat = "identity") +
+  labs(title = "Relationship between Birth Age and Voter Status", x = "Birth Age", y = "Frequency", fill = "Voted Party") +
+  scale_fill_discrete()
+
+## we should add stuff about voting parties to voter
+p8<-ggplot(total, aes(x = voted_party_cd, fill = race_code)) + #don't know what the party codes are
+  geom_bar() +
+  labs(title = "Relationship between Voter Status and Voted Party", x = "Voted Party", y = "Frequency", fill = "Voted Party") +
+  scale_fill_discrete() +
+  coord_flip()
+
+p7+p8
+```
+
+```{r eda-interact-signif, fig.show='hold',fig.align='center', fig.cap="Interaction Distributions"}
+##plots looking for interaction effects race and age
+p9<- ggplot(total, aes(x = as.factor(voted), y = birth_age)) + geom_boxplot(outlier.shape = NA) + facet_grid( ~ race_code)+
+  labs(title = "Relationship between Birth Age and Voted Broken Down by Race", x = "Voted", y = "Birth Age", fill = "Age Dist")
+
+##plot for interaction for congressional district and age
+p10<- ggplot(total, aes(x = as.factor(cong_dist_abbrv), y = birth_age)) + geom_boxplot(outlier.shape = NA) + facet_grid( ~as.factor(voted))+
+  labs(title = "Relationship between Birth Age and Voted Broken Down by Congressional District", x = "Voted", y = "Birth Age", fill = "Age Dist")
+
+p9+p10
+```
+
+
+
+# Model
+
+```{r data cleaning, include=F, eval=FALSE}
+total <- total %>%
+  select(voted, status_cd, race_code, ethnic_code, birth_age, drivers_lic, cong_dist_abbrv)
+
+total <- total %>%
+  mutate(cong_dist_abbrv = as.factor(cong_dist_abbrv), race_code = relevel(race_code, ref = "W"), drivers_lic = relevel(drivers_lic, "Y"), status_cd = relevel(status_cd, ref = "A"), ethnic_code = relevel(ethnic_code, ref = "NL"))
+```
+
+
+
+## Logistic Regression
+
+
+```{r test-train-total, eval=FALSE}
+set.seed(27436378)
+sample <- sample.int(n = nrow(total), size = floor(0.8*nrow(total)), replace = F)
+train <- total[sample,]
+test <- total[-sample,]
+```
+
+```{r logistic-regression, eval=FALSE}
+memory.limit(size=10240)
+
+model1 <- glm(voted ~ status_cd + race_code + birth_age + drivers_lic + cong_dist_abbrv +  ethnic_code + race_code*birth_age + cong_dist_abbrv*birth_age, data=train, family = "binomial")
+```
+
+```{r select, eval=FALSE}
+summary(model1)
+```
+```{r confusion-matrix, eval=FALSE} 
+preds <- model1 %>% predict(test, type="response")
+pred_model <- as.integer(preds > 0.5)
+confus <- table(test$voted, pred_model) %>%
+  data.frame() %>%
+  mutate(Predicted = ifelse(pred_model == 0, "Voted", "Did Not Vote")) %>%
+  mutate(Actual = ifelse(Var1 == 0, "Voted", "Did Not Vote")) %>%
+  dplyr::select(Freq, Predicted, Actual) %>%
+  pivot_wider(names_from = "Actual", values_from = Freq) %>%
+  kable(col.names = c("Actual Value", "Voted", "Did Not Vote")) %>%
+  kableExtra::kable_styling()
+
+ggplot(confus, aes(d = as.numeric(voted), m = .fitted)) + 
+  geom_roc(n.cuts = 0) + 
+  geom_abline(intercept = 0)
+pROC::roc(model1_aug$voted,model1_aug$.fitted)$auc
+
+
+plot(model1, which=1)
+```
+
+### Appendix
+
+```{eda-extra-not-filled-with-race, eval=FALSE}
+##distribution of ages
+ggplot(total, aes(x = as.factor(voted), y = birth_age)) + 
+  geom_boxplot() +
+  labs(title = "Distribution of Ages", x = "Voted", y = "Age")
+
+ggplot(total, aes(voter_status_reason_desc, fill = race_code)) +
+  geom_bar() +
+  labs(title = "Distribution of Voter Status Reason", x = "Voter Status Reason", y = "Frequency") +
+  coord_flip() +
+  scale_fill_discrete()
+
+
+##plot for interaction with age and ethnicity
+ggplot(total, aes(x = as.factor(ethnic_code), y = birth_age)) + geom_boxplot(outlier.shape = NA) + facet_grid(~as.factor(voted))+
+  labs(title = "Relationship between Birth Age and Voted Broken Down by Ethnicity", x = "Voted", y = "Birth Age", fill = "Age Dist")
+```
+
+```{r model-without-inter, eval=FALSE}
+model <- glm(voted ~ status_cd + race_code + birth_age + drivers_lic + cong_dist_abbrv +  ethnic_code, data=train, family = "binomial")
+summary(model)
+```

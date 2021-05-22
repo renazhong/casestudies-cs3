@@ -1,0 +1,1645 @@
+---
+title: "Case Study 3: Election Prediction"
+author: "Bob Ding, Becca Erenbaum, Grace O'Leary, Rena Zhong"
+date: "11/1/2020"
+header-includes:
+  - \usepackage{bm}
+  - \usepackage{amsmath}
+  - \usepackage{nccmath}
+  - \usepackage{amssymb}
+  - \usepackage{dsfont}
+  - \usepackage{media9}
+  - \usepackage{graphicx}
+  - \usepackage{MnSymbol,wasysym}
+  - \usepackage{subcaption}     
+  - \usepackage{textcomp}
+  - \usepackage{wrapfig}
+  - \usepackage{enumitem}
+  - \usepackage{fancyhdr}
+  - \usepackage{float}
+  - \usepackage{bm}
+  - \usepackage{afterpage}
+  - \usepackage{hyperref}
+  - \usepackage{lscape}
+  - \usepackage{tabularx}
+  - \usepackage[ruled,vlined]{algorithm2e}
+  - \usepackage{xcolor}
+  - \floatplacement{figure}{H}
+output: 
+  pdf_document:
+    fig_caption: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width = 7, fig.height = 5)
+options(digits = 4)
+```
+
+```{r packages, include=F}
+library(FedData)
+pkg_test("mcmcr")
+pkg_test("tidyverse")
+pkg_test("R2jags")
+pkg_test("ggplot2")
+pkg_test("knitr")
+pkg_test("matrixStats")
+pkg_test("gridExtra")
+pkg_test("kableExtra")
+pkg_test("usmap")
+pkg_test("tidyr")
+pkg_test("dplyr")
+pkg_test("plyr")
+pkg_test("grid")
+```
+
+# 1. Introduction
+
+The outcome of the 2016 election not only stunned the nation, but also sent shockwaves through the statistical and polling communities. Over the course of the election year, in 2016, up until the week of the election, poll predictions of Hillary Clinton's likelihood of beating Donald Trump ranged from 71%- 99% probability [1]. So, when Trump beat these odds, the polling industry lost a lot of trust from the general public [2].
+	This small, specialized industry that is the political polling business, has a great deal of influence on how the election is portrayed in the news media, voter decisions, and candidate partisan policy initiatives. [1]. Million dollar decisions on advertising and campaign strategy are dictated by polls. 
+	Polls conducted early in the election year are a weak predictor of election outcomes because the general public has paid less attention to the race and is less knowledgeable of the candidates' platforms. Voters that tend to sway between parties often report that they are undecided. However, these are arguably the most important opinions in predicting the election outcomes. [3] As the election nears, polls become more accurate. That is where historical prediction models have been lacking -- they fail to take into account the differential accuracy in poll results. Historical models, regression based models that rely on outcomes from past elections and structural factors, predict election outcomes at a single point in time which renders high levels of uncertainty [4]. 
+Drew A. Linzer developed a dynamic bayesian forecasting model to predict the U.S. presidential election at the national and state level that combines these historical models with everchanging poll updates. Linzer's model uses hierarchical specification to handle states being polled on different days and takes into account sampling errors of the polls and national campaign effects [4]. 
+
+In this report we aim to answer the following 4 questions:
+
+* 1. Predict the outcome of the presidential election and the electoral college vote using the Linzer model to predict swing state outcomes in combination with presumed election results of "Red Wall" and "Blue Wall" states.
+
+* 2. Predict whether the US Senate remains in Republican control by using an adaptation of the Linzer model and FiveThirtyEight Senate poll data for each state
+
+* 3. Predict the outcomes of all 13 NC Congressional elections using Linzer model with input from FiveThirtyEight Senate poll data for North Carolina along with our model that predicts who will vote in North Carolina
+
+* 4. The outcome of the NC Senate election and the associated uncertainty using the Linzer model.
+
+Taking into account the anomaly that was the 2016 election, we chose to use the Linzer model to best account for slight and unexpected changes leading up to election day. In Section 2 of this report we will discuss datasets used for all tasks, including a brief exploratory data analysis. In Section 3, we formulate models and methodologies that answer all the research questions. Section 4 will present model diagnostic and sanity check validation of prediction. Then, in section 5 we present the major results of our analysis. Section 6 will be focused on conducting sensitivity analysis to test data imputation hypothesis and prior choices.
+
+# 2. Data Source and EDA
+
+```{r load-data, include=FALSE, warning=FALSE}
+
+total_MCMC_itr = 10000
+president_polls_2020 <- read_csv("2020 US presidential election polls - all_polls.csv") %>%
+    mutate(days_to_election = as.Date("2020/11/03","%Y/%m/%d" ) - as.Date(end.date, "%m/%d/%Y"),
+         state = ifelse(state == "--","Overall",state),
+         y = biden/(biden + trump)*100)
+
+house_polls <- read_csv("house_polls.csv")
+senate_polls <- read_csv("senate_polls.csv")
+ncvhis_Statewide_small <- read_rds("ncvhis_Statewide_small.rds")
+```
+
+## 2.1 Description of Data
+
+In order to answer these questions, we used a total of four datasets: senate polls, house polls, 2020 US presidential election polls, and North Carolina voter registration history snapshot dataset. Both the senate and house polls dataset comes from the fivethirtyeight website [5], while the presidential election polls dataset comes from the Economist website [6].Senate and house polls have 38 variables and 4061 and 2655 observations respectively. The presidential election polls have 1447 observations and 17 variables which are: poll state, pollster, sponsor, start and end date, entry time, number of observations, population, method, Biden, Trump, Biden margin, other, undecided, URL, include, and notes.
+
+The North Carolina voter history dataset contains information on the 2016 elections and about how voters voted (method, election, county, party affiliation, precinct). This will help us model and identify potential voters in 2020 (Interim report). On top of the created model, we used the 2020 voter registration snapshot dataset to identify potential voters, and use this information as additional input to model house polls results.
+
+## 2.2 Exploratory Data Analysis
+
+To get a basic understanding of the four datasets we were working with, we went through the data to understand what we were working with. In the senate and the house polls, we explored the variables of: methodology of the poll, the state in which the poll was conducted, which party the candidate was, and the percentage of the poll. In the presidential election polls, we explored similar variables of: method of poll and state, in addition to the margin between Biden and Trump. Because all three of these datasets had similar variables, we are able to compare them to each other. In Figure 1, we can see how the methods of polling were distributed between the house, senate, and presidential polls. 
+
+
+```{r eda-methods, echo=FALSE, fig.cap="Poll Methodology", fig.align="center", fig.width=9, fig.height=4, fig.pos="H"}
+house_method <- ggplot(house_polls, mapping = aes(x=methodology)) +
+  geom_bar() +
+  labs(title = "Poll Methodology Distribution", subtitle = "House Polls",
+       x = "Method Type") +
+  theme(axis.text.x = element_text(angle = 90))
+# house_method
+
+senate_method <- ggplot(senate_polls, mapping = aes(x=methodology)) +
+  geom_bar() +
+  labs(title = "Poll Methodology Distribution", subtitle = "Senate Polls",
+       x = "Method Type") +
+  theme(axis.text.x = element_text(angle = 90))
+# senate_method
+
+presidential_method <-ggplot(president_polls_2020, mapping = aes(x=mode)) +
+  geom_bar() +
+  labs(title = "Poll Methodology Distribution", subtitle = "Presidential Polls",
+       x = "Method Type") +
+  theme(axis.text.x = element_text(angle = 90))
+# presidential_method
+
+grid.arrange(house_method, senate_method, presidential_method, ncol=3)
+```
+
+In Figure 2, we can see how each poll's distribution of which state was polled, and in Figure 3, we can see how the house and senate polls' candidate party are different from each other. Finally, in Figure 4, we can see the distribution of the margin between Biden and Trump. 
+
+```{r eda-state, echo=FALSE, fig.cap="Polls State Distribution",fig.align="center", fig.width=14, fig.height=4, fig.pos="H"}
+house_state <-ggplot(house_polls, mapping = aes(x=state)) +
+  geom_bar() +
+  labs(title = "Poll State Distribution", subtitle = "House Polls",
+       x = "State") +
+  theme(axis.text.x = element_text(angle = 90))
+# house_state
+
+senate_state <-ggplot(house_polls, mapping = aes(x=state)) +
+  geom_bar() +
+  labs(title = "Poll State Distribution", subtitle = "Senate Polls",
+       x = "State") +
+  theme(axis.text.x = element_text(angle = 90))
+# senate_state
+
+presidential_state <-ggplot(president_polls_2020, mapping = aes(x=state)) +
+  geom_bar() + 
+  labs(title = "Poll State Distribution", subtitle = "Presidential Polls",
+       x = "State") +
+  theme(axis.text.x = element_text(angle = 90))
+# presidential_state
+
+grid.arrange(house_state, senate_state, presidential_state, ncol=3)
+
+```
+
+```{r eda-house-senate-polls, echo=FALSE, fig.cap="Candidate Party Polls",fig.align="center", fig.width=8, fig.height=3, fig.pos="H"}
+house_candidate <-ggplot(house_polls, mapping = aes(x=candidate_party)) +
+  geom_bar() +
+  labs(title = "Poll Candidate Party Distribution", subtitle = "House Polls",
+       x = "Party Affiliation") +
+  theme(axis.text.x = element_text(angle = 45))
+
+
+senate_candidate <-ggplot(senate_polls, mapping = aes(x=candidate_party)) +
+  geom_bar() +
+  labs(title = "Poll Candidate Party Distribution", subtitle = "Senate Polls",
+       x = "Party Affiliation") +
+  theme(axis.text.x = element_text(angle = 45))
+
+
+grid.arrange(house_candidate, senate_candidate, ncol=2)
+
+```
+
+
+```{r eda-biden, echo=FALSE, fig.cap="Biden Margin", fig.align='center', fig.width=4, fig.height=2.5, fig.pos="H"}
+biden_margin <-ggplot(president_polls_2020, mapping = aes(x=biden_margin)) +
+  geom_bar() +
+  labs(title = "Biden Margin", x = "Range")
+biden_margin
+```
+
+To explore the North Carolina voter history dataset, we looked at variables such as method, county, and party affiliation of the voter. We can see in Figure 5 that the majority of North Carolina voters are from two counties, Wake and Mecklenberg. Party affiliation and the method that the voters used are included in our appendix C Figure 6. 
+
+```{r eda-ncmap, echo=FALSE, fig.cap="North Carolina Map of Voter Distribution by County", fig.align='center', fig.width=4, fig.height=3, fig.pos="H"}
+
+fips<-data.frame(count(ncvhis_Statewide_small$county_desc))
+fips$fips <- fips("NC", fips$x)
+fips<-fips[-c(1)]
+
+ncmap<-plot_usmap(regions = "counties", include = "NC", data = fips, values = "freq") +
+  labs(title = "NC Voter Info", subtitle = "The number of voters from each county in North Carolina") +
+  scale_fill_continuous(low = "white", high = "blue", name = "County Voters", label = scales::comma) + 
+  theme(legend.position = "right")
+ncmap
+```
+
+# 3. Model Formulation
+
+## 3.1 Model for Question 1
+
+In this section, we build a model to answer our first research question: predict the outcome of the presidential election and the electoral college votes. To do this, we use the Linzer model to predict swing state outcomes as well. To determine swing states, we've relied on worldpopulationreview's partisan index [7]. These states are Florida, Georgia, Iowa, North Carolina, Ohio, Texas, Arizona, Michigan, Minnesota, Nevada, New Hampshire, Pennsylvania, and Wisconsin. We tend to incorporate more states as swing states to avoid strong assumptions that any state is going to win. We follow the route of Linzer and build our model. Specifically, we want to model Joe Biden's percentage of EC votes on the state level. We believe that throughout time, each state's preference for Joe Biden randomly varies and follows a random walk process. Besides, each state's uncertainty of their attitude towards Joe Biden is also different statewide. We make the assumption that such uncertainty is constant over time. Therefore, we create the following extension of Linzer Model.
+
+$$
+\begin{aligned}
+y_{k} & \sim N\left(\beta_{i[k] t[k]}, (\sigma_y^2)_{i[k]}\right) \\
+\text { for } t>1: \beta_{i t} & \sim N\left(\beta_{i, t-1}, (\sigma_{\beta}^{2})\right) \\
+\text { for } t=1: \beta_{i 1} & \sim N\left( \mu_0, \sigma^{2}_0\right) \\
+(\sigma_y^2)_{i[k]} &\sim \text{InvGamma}(\nu_y, \tau_y)\\
+(\sigma_\beta^2) &\sim \text{InvGamma}(\nu_\beta, \tau_\beta)\\\\
+\mu_0 &\sim N(50, 17)\\
+\sigma_0^2 &\sim \text{InvGamma}(\frac{1}{2}, \frac{1}{2})\\
+\nu_y &\sim \text{Uni}(0, 100)\\
+\tau_y &\sim \text{Uni}(0, 100)\\
+\nu_\beta &\sim \text{Uni}(0, 100)\\
+\tau_\beta &\sim \text{Uni}(0, 100)\\
+\end{aligned}
+$$
+
+Where $k$ indexes the poll, $i$ indexes the state, and $t$ indexes the date. $i[k]$ represents the $k^{th}$ poll's corresponding state index, and $t[k]$ represents the $k^{th}$ poll's corresponding date index. We model samples from the economist poll data of 2020 and therefore are able to sample the posterior distribution of 1) Joe Biden's chance of winning, and 2) total electoral vote. The sampled posterior distribution y, which is the percentage of support within each state, will be calculated by comparing it to 50% to simulate the "winner takes all" procedure. After such adjustment, we can simply multiply the number of electoral college votes of each state to obtain a posterior distribution of electoral college votes for the entire nation. Thus, the total electoral vote can be obtained. By comparing this total to 270, we obtain the probability of Joe Biden being elected.
+
+
+
+
+```{r data president, include=F}
+president_polls_2020 <- subset(president_polls_2020, days_to_election < 200)
+president_polls_2020 <- president_polls_2020 %>% 
+  filter(days_to_election <= 200, state %in% c("FL","GA","IA","NC","OH","TX","AZ","MI","MN","NV","NH","PA","WI"))
+
+states <- president_polls_2020$state %>% unique
+
+y <- president_polls_2020$y
+r <- match(president_polls_2020$state,states)
+t <- president_polls_2020$days_to_election + 1 #WHY PLUS ONE?
+
+N_polls <- y %>% length
+N_states <- states %>% length
+N_days <- t %>% max
+
+jags_data <- list(y=y,t=t,r=r,
+                  N_polls=N_polls,N_states=N_states,N_days=N_days)
+
+```
+
+```{r mv_model-president, include=F}
+model_mv <- function(){
+  for(k in 1:N_polls){
+    y[k] ~ dnorm(p[k],1/sigma2_y[r[k]]) #note no longer binomial
+    p[k] = theta[r[k],t[k]]
+  }
+  for(j in 2:N_days){
+    theta[1:N_states,j] ~ dmnorm(theta[1:N_states,j-1],Phi)
+  }
+  Phi ~ dwish(I_states,N_states+1) #fill in wishart parameters, google JAGS wishart distribution should turn it up
+  Sigma = inverse(Phi)
+  #which, Phi or Sigma is the covariance and which is the precision? 
+  
+  #optional: theta[1:N_states,1] ~ dmnorm(mu0,s0) #define mu0 and s0 in your jags_data object
+  
+  #Use your hierarchical prior for sigma2_y from before 
+  for(j in 1:N_states){
+      sigma2_y[j] = 1/sigma2_y_inv[j]
+      sigma2_y_inv[j] ~ dgamma(nu_y,nu_y*tau_y) 
+      
+      theta[j,1] ~ dnorm(mu0,pow(sigma2_0,-1))
+  }
+  nu_y ~ dunif(0,100)
+  tau_y ~ dunif(0,100)
+  
+  nu_beta ~ dunif(0,100)
+  tau_beta ~ dunif(0,100)
+  
+  mu0 ~ dnorm(50,pow(7.5,-2))
+  sigma2_0 = 1/sigma2_0_inv
+  sigma2_0_inv ~ dgamma(.5,.5)
+}
+
+
+```
+
+
+
+```{r mv_model-president sensitivity, include=F}
+model_mv_2 <- function(){
+  for(k in 1:N_polls){
+    y[k] ~ dnorm(p[k],1/sigma2_y[r[k]]) #note no longer binomial
+    p[k] = theta[r[k],t[k]]
+  }
+  for(j in 2:N_days){
+    theta[1:N_states,j] ~ dmnorm(theta[1:N_states,j-1],Phi)
+  }
+  Phi ~ dwish(I_states,N_states+1) #fill in wishart parameters, google JAGS wishart distribution should turn it up
+  Sigma = inverse(Phi)
+  #which, Phi or Sigma is the covariance and which is the precision? 
+  
+  #optional: theta[1:N_states,1] ~ dmnorm(mu0,s0) #define mu0 and s0 in your jags_data object
+  
+  #Use your hierarchical prior for sigma2_y from before 
+  for(j in 1:N_states){
+      sigma2_y[j] = 1/sigma2_y_inv[j]
+      sigma2_y_inv[j] ~ dgamma(nu_y,nu_y*tau_y) 
+      
+      theta[j,1] ~ dnorm(mu0,pow(sigma2_0,-1))
+  }
+  nu_y ~ dunif(0,10)
+  tau_y ~ dunif(0,10)
+  
+  nu_beta ~ dunif(0,10)
+  tau_beta ~ dunif(0,10)
+  
+  mu0 ~ dnorm(50,pow(5,-2))
+  sigma2_0 = 1/sigma2_0_inv
+  sigma2_0_inv ~ dgamma(.5,.5)
+}
+
+model_mv_3 <- function(){
+  for(k in 1:N_polls){
+    y[k] ~ dnorm(p[k],1/sigma2_y[r[k]]) #note no longer binomial
+    p[k] = theta[r[k],t[k]]
+  }
+  for(j in 2:N_days){
+    theta[1:N_states,j] ~ dmnorm(theta[1:N_states,j-1],Phi)
+  }
+  Phi ~ dwish(I_states,N_states+1) #fill in wishart parameters, google JAGS wishart distribution should turn it up
+  Sigma = inverse(Phi)
+  #which, Phi or Sigma is the covariance and which is the precision? 
+  
+  #optional: theta[1:N_states,1] ~ dmnorm(mu0,s0) #define mu0 and s0 in your jags_data object
+  
+  #Use your hierarchical prior for sigma2_y from before 
+  for(j in 1:N_states){
+      sigma2_y[j] = 1/sigma2_y_inv[j]
+      sigma2_y_inv[j] ~ dgamma(nu_y,nu_y*tau_y) 
+      
+      theta[j,1] ~ dnorm(mu0,pow(sigma2_0,-1))
+  }
+  nu_y ~ dunif(0,1)
+  tau_y ~ dunif(0,1)
+  
+  nu_beta ~ dunif(0,1)
+  tau_beta ~ dunif(0,1)
+  
+  mu0 ~ dnorm(50,pow(2.5,-2))
+  sigma2_0 = 1/sigma2_0_inv
+  sigma2_0_inv ~ dgamma(.5,.5)
+}
+```
+
+
+```{r run-model-president,eval=TRUE,cache=TRUE, include=F}
+jags_data <- list(y=y,t=t,r=r,
+                  N_polls=N_polls,N_states=N_states,N_days=N_days)
+
+jags_data$I_states <- diag(N_states)
+
+#be sure to add your added parameters to parameters.to.save
+jags_sims_mv <- jags(data = jags_data,model.file = model_mv,parameters.to.save = c("theta","Sigma",
+                                                                                "p","sigma2_y"),
+                  n.iter = total_MCMC_itr)
+
+#Sensitivity Check 2
+jags_sims_mv_2 <- jags(data = jags_data,model.file = model_mv,parameters.to.save = c("theta","Sigma",
+                                                                                "p","sigma2_y"),
+                  n.iter = total_MCMC_itr)
+
+#Sensitivity Check 3
+jags_sims_mv_3 <- jags(data = jags_data,model.file = model_mv,parameters.to.save = c("theta","Sigma",
+                                                                                "p","sigma2_y"),
+                  n.iter = total_MCMC_itr)
+```
+
+
+
+```{r mcmc president diagnostic, include=F}
+
+# mean(as.data.frame(jags_sims_mv$BUGSoutput$summary)$Rhat)
+
+Result_MCMC_president <- as.mcmc(jags_sims_mv)
+Result_data_president <- data.frame(as.matrix(Result_MCMC_president))
+Result_data_president$index <- seq(1, dim(Result_data_president)[1])
+
+
+trace_president_p <- ggplot(data=Result_data_president) +
+  geom_line(aes(x = index, y=p.712.), color="blue") + 
+  geom_line(aes(x = index, y=p.612.), color="green") + 
+  geom_line(aes(x = index, y=p.512.), color="red") +
+  geom_line(aes(x = index, y=p.71.), color="black") + 
+  geom_line(aes(x = index, y=p.61.), color="grey") + 
+  geom_line(aes(x = index, y=p.51.), color="pink") 
+
+
+trace_president_sigma <- ggplot(data=Result_data_president) +
+  geom_line(aes(x = index, y=Sigma.1.1.), color="blue") + 
+  geom_line(aes(x = index, y=Sigma.11.10.), color="green") + 
+  geom_line(aes(x = index, y=Sigma.2.10.), color="red") +
+  geom_line(aes(x = index, y=Sigma.4.10.), color="black") + 
+  geom_line(aes(x = index, y=Sigma.3.10.), color="grey") + 
+  geom_line(aes(x = index, y=Sigma.6.10.), color="pink") 
+
+
+```
+
+```{r voting state plot, include=F, message=F}
+poll_plot_data <- tibble(y=jags_data$y,t=jags_data$t %>% as.integer(),state = states[jags_data$r])
+
+
+
+beta_plot_data <- lapply(1:N_states,function(index){
+  sims <- jags_sims_mv$BUGSoutput$sims.list$theta[ , index , ]
+  data.frame(state = states[index],t=1:N_days,mean=colMeans(sims),lb=apply(sims,2,quantile,probs=.025),ub=apply(sims,2,quantile,probs=.975))
+}) %>% 
+  bind_rows()
+
+swing_state_traj <- left_join(beta_plot_data,poll_plot_data) %>% 
+  ggplot(aes(x=t)) + 
+  geom_line(aes(y=mean)) + 
+  geom_ribbon(aes(ymin = lb,ymax = ub),alpha = .2) +
+  geom_point(aes(y=y)) + 
+  scale_x_reverse() + 
+  facet_wrap(~ state) + 
+  labs(title="Percentage of Biden's Support from All Swing States in Time") 
+
+
+
+
+```
+
+```{r plot implied variance, echo=F}
+poll_plot_data$p <- jags_sims_mv$BUGSoutput$mean$p
+poll_plot_data$sigma2y <- jags_sims_mv$BUGSoutput$mean$sigma2_y[jags_data$r]
+poll_plot_data$binom_v <- (poll_plot_data$p)*(100-poll_plot_data$p)/ president_polls_2020$number.of.observations
+
+
+# 
+president_var <- poll_plot_data %>%
+  ggplot(aes(x=binom_v)) +
+  geom_density() +
+  geom_vline(aes(xintercept = sigma2y),color = "red") +
+  facet_wrap(~ state)
+
+
+```
+
+```{r winning probability, include=F, eval=T}
+sims <- jags_sims_mv$BUGSoutput$sims.list$theta[,,1]
+colnames(sims) <- states
+swing_state_win_prob <- as.data.frame(sims %>% {.>51} %>% colMeans())
+names(swing_state_win_prob) <- "Official Model"
+
+swing_state_share_interval_president <- colQuantiles(sims-1, probs=c(0.025, 0.5, 0.975))
+
+sims_2 <- jags_sims_mv_2$BUGSoutput$sims.list$theta[,,1]
+colnames(sims_2) <- states
+swing_state_win_prob_2 <- as.data.frame(sims_2 %>% {.>51} %>% colMeans())
+names(swing_state_win_prob_2) <- "Informative Prior"
+
+swing_state_share_interval_president_2 <- colQuantiles(sims-1, probs=c(0.025, 0.5, 0.975))
+
+
+sims_3 <- jags_sims_mv_3$BUGSoutput$sims.list$theta[,,1]
+colnames(sims_3) <- states
+swing_state_win_prob_3 <- as.data.frame(sims_3 %>% {.>51} %>% colMeans())
+names(swing_state_win_prob_3) <- "Imputation Perturbation"
+
+swing_state_share_interval_president_3 <- colQuantiles(sims-1, probs=c(0.025, 0.5, 0.975))
+
+swing_state_win_prob <- kable(cbind(swing_state_win_prob, swing_state_win_prob_2, swing_state_win_prob_3), caption = "Swing State Winning Probability (Biden)")
+
+swing_state_share_interval_president <- cbind(swing_state_share_interval_president,
+                                                    swing_state_share_interval_president_2,
+                                                    swing_state_share_interval_president_3)
+
+
+swing_state_share_interval_president <- kbl(swing_state_share_interval_president, booktabs=T, caption = "Swing State Share Percentage Interval Estimate (Biden)") %>%
+  add_header_above(c(" " = 1, "Official Model" = 3, "Informative Prior" = 3, "Imputation Perturbation" = 3)) %>% 
+  kable_styling(latex_options = "striped") %>%
+  kable_styling(latex_options = "HOLD_position")
+
+```
+
+```{r ec vote distribution, include=F}
+ec_votes <- ((sims>52) %*% diag(c(10,20, 29,38,16,16,15, 9, 18, 11, 9, 9, 4))) %>% rowSums() + 230
+ec_vote_mean <- mean(ec_votes)
+ec_vote_qt <- quantile(ec_votes, probs=c(0.025, 0.975))
+ec_vertical_lines <- c(ec_vote_qt[1], ec_vote_mean, ec_vote_qt[2])
+ec_dis <- ggplot() + aes(ec_votes)+ geom_histogram(binwidth=5) + ggtitle("Electoral College Vote Share Distribution") + geom_vline(xintercept = ec_vertical_lines) + labs(x="Total Electoral College Vote", y="Count")
+ec_interval <- kable(quantile(ec_votes, probs = c(0.025, 0.975) ), caption="EC Vote Total (Biden)")
+
+swing_state_prob <- mean({ec_votes > 270})
+ec_vote_mean
+```
+
+```{r some random functions, include=F}
+reorder_cormat <- function(cormat){
+  # Use correlation between variables as distance
+  dd <- as.dist((1-cormat)/2)
+  hc <- hclust(dd)
+  cormat <-cormat[hc$order, hc$order]
+}
+get_upper_tri <- function(cormat){
+  cormat[lower.tri(cormat)]<- NA
+  return(cormat)
+}
+
+get_heatmap <- function(cormat){
+  cormat %>% 
+    cov2cor() %>% 
+    reorder_cormat %>% 
+    get_upper_tri %>% 
+    reshape2::melt(na.rm = TRUE) %>% 
+    ggplot(aes(Var2, Var1, fill = value))+
+    geom_tile(color = "white")+
+    scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                         midpoint = 0, limit = c(-1,1), space = "Lab", 
+                         name="Pearson\nCorrelation") +
+    theme_minimal()+ # minimal theme
+    labs(x="",y="") + 
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                     size = 12, hjust = 1))+
+    coord_fixed()
+}
+```
+
+```{r cross state correlation, include=F}
+cor_sims <- array(NA,dim = jags_sims_mv$BUGSoutput$sims.list$Sigma %>% dim)
+for(i in 1:dim(cor_sims)[1]){
+  cor_sims[i,,] <- cov2cor(jags_sims_mv$BUGSoutput$sims.list$Sigma[i,,])
+}
+cor_mean <- apply(cor_sims,c(2,3),mean)
+colnames(cor_mean) <- states
+rownames(cor_mean) <- states
+
+#full heatmap
+heatMap <- get_heatmap(cor_mean)
+```
+
+## 3.2 Model for Question 2, 4
+
+In this section, we're answering question 2 and 4 jointly: Predict whether the US Senate remains in republican control and predict the outcome of the NC Senate election. By using the above model with the same notation, and by switching Economist dataset to FiveThirtyEight senate polls data, the same inference procedure can be produced. This time, considering there are some states not running senator elections (Wisconsin, Ohio, Washington, Maryland, Pennsylvania, California, New York, Hawaii, Connecticut, Nevada, Indiana, North Dakota, Missouri, Utah, Vermont, Florida), we only model the states that are running senator elections. After modeling and predicting the Republicans' support percentage in each of these "electing states," we can predict whether the Republican or Democratic party wins the state majority in that state. This procedure also includes North Carolina. Furthermore, by summing the posterior samples of Republican senators in each state on election day, we can obtain the posterior distribution of whether the US Senate remains in Republican Party's control.
+
+```{r make us senator data, include=F}
+senator <- read_csv("senate_polls.csv")
+non_electing_states <- c("Wisconsin",
+                         "Ohio",
+                         "Washington",
+                         "Maryland",
+                         "Pennsylvania",
+                         "California",
+                         "New York",
+                         "Hawaii",
+                         "Connecticut",
+                         "Nevada",
+                         "Indiana",
+                         "North Dakota",
+                         "Missouri",
+                         "Utah",
+                         "Vermont",
+                         "Florida")
+senator <- senator[! senator$state %in% non_electing_states ,]
+senator$days_to_election = as.Date(senator$election_date, "%m/%d/%Y") - as.Date(senator$end_date, "%m/%d/%Y")
+senator <- senator %>% filter(candidate_party %in% c("DEM","REP"))
+senator$state <- ifelse(senator$state == "NA","US",senator$state)
+senator <- senator %>% filter(days_to_election <= 100)
+states <- senator$state %>% unique
+
+senator$y = ifelse(senator$candidate_party == "REP", senator$pct, 100-senator$pct) # support ratio for rep
+senator$r <- match(senator$state, states)
+senator$t <- senator$days_to_election + 1 #WHY PLUS ONE?
+
+senator_y<- senator$y
+senator_r<- senator$r
+senator_t<- senator$t
+
+N_polls <- senator_y %>% length
+N_states <- states %>% length
+N_days <- senator_t %>% max
+
+
+```
+
+```{r mv_model-senator, include=F}
+model_senator <- function(){
+  for(k in 1:N_polls)
+  {
+    y[k] ~ dnorm(p[k],1/sigma2_y[r[k]]) #note no longer binomial
+    p[k] = theta[r[k],t[k]]
+  }
+  for(j in 2:N_days)
+  {
+    theta[1:N_states,j] ~ dmnorm(theta[1:N_states,j-1],Phi)
+  }
+  Phi ~ dwish(I_states,N_states+1) #fill in wishart parameters, google JAGS wishart distribution should turn it up
+  Sigma = inverse(Phi)
+  #which, Phi or Sigma is the covariance and which is the precision? 
+  
+  #optional: theta[1:N_states,1] ~ dmnorm(mu0,s0) #define mu0 and s0 in your jags_data object
+  
+  #Use your hierarhciacl prior for sigma2_y from before 
+  for(j in 1:N_states){
+      sigma2_y[j] = 1/sigma2_y_inv[j]
+      sigma2_y_inv[j] ~ dgamma(nu_y,nu_y*tau_y) 
+      
+      theta[j,1] ~ dnorm(mu0,pow(sigma2_0,-1))
+  }
+  nu_y ~ dunif(0,100)
+  tau_y ~ dunif(0,100)
+  
+  nu_beta ~ dunif(0,100)
+  tau_beta ~ dunif(0,100)
+  
+  mu0 ~ dnorm(50,pow(7.5,-2))
+  sigma2_0 = 1/sigma2_0_inv
+  sigma2_0_inv ~ dgamma(.5,.5)
+}
+```
+
+```{r mv_model-senator sensitivity, include=F}
+model_senator_2 <- function(){
+  for(k in 1:N_polls)
+  {
+    y[k] ~ dnorm(p[k],1/sigma2_y[r[k]]) #note no longer binomial
+    p[k] = theta[r[k],t[k]]
+  }
+  for(j in 2:N_days)
+  {
+    theta[1:N_states,j] ~ dmnorm(theta[1:N_states,j-1],Phi)
+  }
+  Phi ~ dwish(I_states,N_states+1) #fill in wishart parameters, google JAGS wishart distribution should turn it up
+  Sigma = inverse(Phi)
+  #which, Phi or Sigma is the covariance and which is the precision? 
+  
+  #optional: theta[1:N_states,1] ~ dmnorm(mu0,s0) #define mu0 and s0 in your jags_data object
+  
+  #Use your hierarhciacl prior for sigma2_y from before 
+  for(j in 1:N_states){
+      sigma2_y[j] = 1/sigma2_y_inv[j]
+      sigma2_y_inv[j] ~ dgamma(nu_y,nu_y*tau_y) 
+      
+      theta[j,1] ~ dnorm(mu0,pow(sigma2_0,-1))
+  }
+  nu_y ~ dunif(0,10)
+  tau_y ~ dunif(0,10)
+  
+  nu_beta ~ dunif(0,10)
+  tau_beta ~ dunif(0,10)
+  
+  mu0 ~ dnorm(50,pow(5,-2))
+  sigma2_0 = 1/sigma2_0_inv
+  sigma2_0_inv ~ dgamma(.5,.5)
+}
+
+model_senator_3 <- function(){
+  for(k in 1:N_polls)
+  {
+    y[k] ~ dnorm(p[k],1/sigma2_y[r[k]]) #note no longer binomial
+    p[k] = theta[r[k],t[k]]
+  }
+  for(j in 2:N_days)
+  {
+    theta[1:N_states,j] ~ dmnorm(theta[1:N_states,j-1],Phi)
+  }
+  Phi ~ dwish(I_states,N_states+1) #fill in wishart parameters, google JAGS wishart distribution should turn it up
+  Sigma = inverse(Phi)
+  #which, Phi or Sigma is the covariance and which is the precision? 
+  
+  #optional: theta[1:N_states,1] ~ dmnorm(mu0,s0) #define mu0 and s0 in your jags_data object
+  
+  #Use your hierarhciacl prior for sigma2_y from before 
+  for(j in 1:N_states){
+      sigma2_y[j] = 1/sigma2_y_inv[j]
+      sigma2_y_inv[j] ~ dgamma(nu_y,nu_y*tau_y) 
+      
+      theta[j,1] ~ dnorm(mu0,pow(sigma2_0,-1))
+  }
+  nu_y ~ dunif(0,1)
+  tau_y ~ dunif(0,1)
+  
+  nu_beta ~ dunif(0,1)
+  tau_beta ~ dunif(0,1)
+  
+  mu0 ~ dnorm(50,pow(2.5,-2))
+  sigma2_0 = 1/sigma2_0_inv
+  sigma2_0_inv ~ dgamma(.5,.5)
+}
+```
+
+
+```{r run jags senator,eval=TRUE,cache=TRUE, include=F}
+
+senator_jags_data <- list(y=senator_y,t=senator_t,r=senator_r,
+                  N_polls=N_polls,N_states=N_states,N_days=N_days)
+
+senator_jags_data$I_states <- diag(N_states)
+
+#be sure to add your added parameters to parameters.to.save
+jags_sims_senator <- jags(data = senator_jags_data,
+                          model.file = model_senator,
+                          parameters.to.save = c("theta","Sigma","p","sigma2_y"),
+                          n.iter = total_MCMC_itr) #total_MCMC_itr
+
+jags_sims_senator_2 <- jags(data = senator_jags_data,
+                          model.file = model_senator_2,
+                          parameters.to.save = c("theta","Sigma","p","sigma2_y"),
+                          n.iter = total_MCMC_itr) #total_MCMC_itr
+
+jags_sims_senator_3 <- jags(data = senator_jags_data,
+                          model.file = model_senator_3,
+                          parameters.to.save = c("theta","Sigma","p","sigma2_y"),
+                          n.iter = total_MCMC_itr) #total_MCMC_itr
+```
+
+```{r mcmc senate diagnostic, include=F}
+
+mean(as.data.frame(jags_sims_senator$BUGSoutput$summary)$Rhat)
+
+Result_MCMC_senate <- as.mcmc(jags_sims_mv)
+Result_data_senate <- data.frame(as.matrix(Result_MCMC_senate))
+Result_data_senate$index <- seq(1, dim(Result_data_senate)[1])
+
+
+trace_senate_p <- ggplot(data=Result_data_senate) +
+  geom_line(aes(x = index, y=p.712.), color="blue") + 
+  geom_line(aes(x = index, y=p.612.), color="green") + 
+  geom_line(aes(x = index, y=p.512.), color="red") +
+  geom_line(aes(x = index, y=p.71.), color="black") + 
+  geom_line(aes(x = index, y=p.61.), color="grey") + 
+  geom_line(aes(x = index, y=p.51.), color="pink") 
+
+
+trace_senate_sigma <- ggplot(data=Result_data_senate) +
+  geom_line(aes(x = index, y=Sigma.1.1.), color="blue") + 
+  geom_line(aes(x = index, y=Sigma.11.10.), color="green") + 
+  geom_line(aes(x = index, y=Sigma.2.10.), color="red") +
+  geom_line(aes(x = index, y=Sigma.4.10.), color="black") + 
+  geom_line(aes(x = index, y=Sigma.3.10.), color="grey") + 
+  geom_line(aes(x = index, y=Sigma.6.10.), color="pink") 
+
+
+```
+
+```{r plot senator for all state, eval=T, include=F}
+senator_poll_plot_data <- tibble(y=senator_jags_data$y,
+                                 t=senator_jags_data$t %>% as.integer(),
+                                 state = states[senator_jags_data$r])
+
+senator_beta_plot_data <- lapply(1:N_states,function(st){
+  sims <- jags_sims_senator$BUGSoutput$sims.list$theta[,st,]
+  data.frame(state = states[st],
+             t=1:N_days,mean=colMeans(sims),
+             lb=apply(sims,2,quantile,probs=.025),
+             ub=apply(sims,2,quantile,probs=.975))}) %>% 
+  bind_rows()
+
+senator_trend <- left_join(senator_beta_plot_data,senator_poll_plot_data) %>% 
+  ggplot(aes(x=t)) + 
+  geom_line(aes(y=mean)) + 
+  geom_ribbon(aes(ymin = lb,ymax = ub),alpha = .2) + 
+  geom_point(aes(y=y)) + 
+  scale_x_reverse() + 
+  facet_wrap(~ state) +
+  labs(title="Percentage of Republican Senate Supportance of All Running States in Time") 
+
+
+```
+
+```{r plot senator prob for all state, eval=T, echo=F}
+senator_poll_plot_data$p <- jags_sims_senator$BUGSoutput$mean$p
+senator_poll_plot_data$sigma2y <- jags_sims_senator$BUGSoutput$mean$sigma2_y[senator_jags_data$r]
+senator_poll_plot_data$binom_v <- (senator_poll_plot_data$p)*(100-senator_poll_plot_data$p)/ senator$sample_size
+
+
+senator_var <- senator_poll_plot_data %>%
+  ggplot(aes(x=binom_v)) +
+  geom_density() +
+  geom_vline(aes(xintercept = sigma2y),color = "red") +
+  facet_wrap(~ state)
+
+
+```
+
+```{r all state senator expectation, include=F}
+
+senator_sims <- jags_sims_senator$BUGSoutput$sims.list$theta[,,1]
+colnames(senator_sims) <- states
+senator_all_state_prob <- as.data.frame(senator_sims %>% {.>48} %>% colMeans())
+names(senator_all_state_prob) <- "Official Model"
+swing_state_share_interval <- colQuantiles(senator_sims, probs=c(0.025, 0.5, 0.975))
+
+senator_sims_2 <- jags_sims_senator_2$BUGSoutput$sims.list$theta[,,1]
+colnames(senator_sims_2) <- states
+senator_all_state_prob_2 <- as.data.frame(senator_sims_2 %>% {.>48} %>% colMeans())
+names(senator_all_state_prob_2) <- "Informative Prior"
+swing_state_share_interval_2 <- colQuantiles(senator_sims_2, probs=c(0.025, 0.5, 0.975))
+
+senator_sims_3 <- jags_sims_senator_3$BUGSoutput$sims.list$theta[,,1]
+colnames(senator_sims_3) <- states
+senator_all_state_prob_3 <- as.data.frame(senator_sims_3 %>% {.>48} %>% colMeans())
+names(senator_all_state_prob_3) <- "Imputation Perturbation"
+swing_state_share_interval_3 <- colQuantiles(senator_sims_3, probs=c(0.025, 0.5, 0.975))
+
+
+senator_all_state_prob <- kable(cbind(senator_all_state_prob,
+                                      senator_all_state_prob_2,
+                                      senator_all_state_prob_3), caption = "Senator All State Winning Probability (REP)")
+
+
+swing_state_share_interval <- cbind(swing_state_share_interval,
+                                    swing_state_share_interval_2,
+                                    swing_state_share_interval_3)
+
+
+swing_state_share_interval <- kbl(swing_state_share_interval, booktabs=T, caption = "Senator All State Vote Share Percentage Interval Estimate (REP") %>%
+  add_header_above(c(" " = 1, "Official Model" = 3, "Informative Prior" = 3, "Imputation Perturbation" = 3)) %>% 
+  kable_styling(latex_options = "striped") %>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+```{r answer for North Carolina, include=F}
+temp <- as.data.frame( t(senator_sims %>% {.>48} %>% colMeans()) )
+
+longnames <- NULL
+interval_nc_senate <- quantile(as.data.frame(senator_sims)$`North Carolina`,  probs = c(0.025, 0.5, 0.975))
+nc_senate_share_qt <- kable(interval_nc_senate, caption="North Carolina Vote Share Interval Estimate")
+mean_nc_senate_prob <- temp$`North Carolina`
+nc_senate_share <- ggplot() + aes(interval_nc_senate)+ geom_histogram() + geom_density(fill="blue", alpha=0.3) + ggtitle("NC Thom Tillis Voter Share Distribution") + geom_vline(xintercept = mean(interval_nc_senate))
+
+tom_win_prob <- mean({as.data.frame(senator_sims)$`North Carolina` > 48})
+
+```
+
+```{r prob senator remains in control of republican, include=F}
+
+total_rep_senate <-  as.numeric(( { senator_sims >49 } * 2) %>% rowSums() +2+13)
+
+senate_dis <- ggplot() + aes(total_rep_senate)+ geom_histogram(binwidth=2) + ggtitle("Distribution of Senators In REP of Whole Nation") + geom_vline(xintercept = mean(total_rep_senate)) + labs(x = "Republican's Senator of the Whole Nation", y="Count")
+
+rep_senate_prob <- mean( { total_rep_senate > 50}   ) 
+```
+
+
+## 3.3 Model for Question 3
+
+In this section, we answer research question 3: Predict the outcomes of all 13 NC Congressional elections. The dataset we used is the FiveThirtyEight house poll data. However, the dataset's sample sizes on each NC congressional district are small. This is due to the fact house polls happen less frequently compared to either senate polls or presidential polls. Besides, not all congressional districts are competitive because there is no term limit for representatives. FiveThirtyEight has only recorded poll history data for competitive districts including districts 2 (already conclusive), 3, 7, 8, 9, 11, 13. Thus, the correlation between non-competitive districts cannot be captured without inputting extra datasets. This section's modeling procedure will rely on the output of the interim reports' "who vote" results. 
+
+Using the model to predict who will vote in 2020, we ran this binary output model on all the registered voters in NC to predict whether they'll vote or not. In the NC voter registration profile 2020 snapshot dataset, there is a column indicating party affiliation of each potential voter [18]. Thus, we can predict the percentage of Republican voters for each congressional district and use this percentage as an imputed value for polls percentage. In this way, we're essentially imputing polling results $y$ for non-competitive districts, which can be also fed into the Linzer Model defined below. A detailed description of how the imputation process work will be discussed after we introduce the Linzer model:
+
+$$
+\begin{aligned}
+y_{k} &\in Y := \{y | y \text{ observed in house poll or } y \text{ imputed}\}\\
+y_{k} & \sim N\left(\beta_{i[k] t[k]}, (\sigma_y^2)_{i[k]}\right) \\
+\text { for } t>1: \beta_{i t} & \sim N\left(\beta_{i, t-1}, (\sigma_{\beta}^{2})\right) \\
+\text { for } t=1: \beta_{i 1} & \sim N\left( \mu_0, \sigma^{2}_0\right) \\
+(\sigma_y^2)_{i[k]} &\sim \text{InvGamma}(\nu_y, \tau_y)\\
+(\sigma_\beta^2) &\sim \text{InvGamma}(\nu_\beta, \tau_\beta)\\\\
+\mu_0 &\sim N(50, 17)\\
+\sigma_0^2 &\sim \text{InvGamma}(\frac{1}{2}, \frac{1}{2})\\
+\nu_y &\sim \text{Uni}(0, 100)\\
+\tau_y &\sim \text{Uni}(0, 100)\\
+\nu_\beta &\sim \text{Uni}(0, 100)\\
+\tau_\beta &\sim \text{Uni}(0, 100)\\
+\end{aligned}
+$$
+
+Where $k$ indexes the polls or the imputed polls, $i$ indexes the congressional district, and $t$ indexes the polls' date. $i[k]$ represents the $k^{th}$ poll's corresponding congressional district index, and $t[k]$ represents the $k^{th}$ poll's corresponding date index.
+
+Now we can start discussion of the imputation. To impute $y$, we are essentially "creating" more polls for those unobserved congressional districts. Suppose we want to create an $y_{k+1}$ that happened on October 10 for district 1, a non-competitive district. We look into all the voters who've registered to vote in congressional district 1 prior to October based on the 2020 voter registration file snapshot dataset. Suppose $n_{k+1}$ voters have registered. We use the model in our interim report to predict who among these $n_{k+1}$ voters are likely to vote. Suppose there are $n^*_{k+1}$ likely voters. Then, we calculate the percentage of voters who are Republicans. Such percentage is the value we've imputed for $y_{k+1}$, which will be served as an additional "poll" to be fed into the Linzer model. By imputing $y_{k+1}, y_{k+2} \cdots$ for all the non-competitive districts on each day following the above procedure, we've obtained a complete "polls record" for non-competitive districts. This can efficiently increase effective sample size for MCMC and also share mutual information on unobserved competitive districts via estimated correlation matrix. 
+
+Though efficient and reasonable, the imputation process above still makes strong assumptions. Thus, sensitivity analysis of imputed percentage will be further explored later in section 6.2.
+
+
+```{r load history data, include=F}
+history <- readRDS("ncvhis_Statewide_small.rds")
+history$election_lbl <- as.Date(history$election_lbl,  "%m/%d/%y")
+history$cong_dist_abbrv[history$county_desc == "BUNCOMBE"] <- 11
+history$cong_dist_abbrv[history$county_desc == "ALLEGHANY"] <- 5
+history$cong_dist_abbrv[history$county_desc == "DAVIDSON"] <- 13
+history$cong_dist_abbrv[history$county_desc == "BUNCOMBE"] <- 11
+history$cong_dist_abbrv[history$county_desc == "CLAY"] <- 11
+history$cong_dist_abbrv[history$county_desc == "POLK"] <- 11
+history$cong_dist_abbrv[history$county_desc == "CALDWELL"] <- 5
+history$cong_dist_abbrv[history$county_desc == "VANCE"] <- 1
+history$cong_dist_abbrv[history$county_desc == "RICHMOND"] <- 9
+history$cong_dist_abbrv[history$county_desc == "MECKLENBURG"] <- 12
+history$cong_dist_abbrv[history$county_desc == "ROBESON"] <- 9
+history$cong_dist_abbrv[history$county_desc == "CUMBERLAND"] <- 8
+history$cong_dist_abbrv[history$county_desc == "CABARRUS"] <- 8
+history$cong_dist_abbrv[history$county_desc == "ROWAN"] <- 13
+history$cong_dist_abbrv[history$county_desc == "JOHNSTON"] <- 7
+history$cong_dist_abbrv[history$county_desc == "COLUMBUS"] <- 7
+history$cong_dist_abbrv[history$county_desc == "BLADEN"] <- 7
+history$cong_dist_abbrv[history$county_desc == "DURHAM"] <- 4
+history$cong_dist_abbrv[history$county_desc == "CARTERET"] <- 3
+history$cong_dist_abbrv[history$county_desc == "CHATHAM"] <- 4
+history$cong_dist_abbrv[history$county_desc == "RANDOLPH"] <- 6
+history$cong_dist_abbrv[history$county_desc == "GUILFORD"] <- 6
+history$cong_dist_abbrv[history$county_desc == "CRAVEN"] <- 3
+history$cong_dist_abbrv[history$county_desc == "DUPLIN"] <- 3
+history$cong_dist_abbrv[history$county_desc == "GRANVILLE"] <- 4
+history$cong_dist_abbrv[history$county_desc == "HALIFAX"] <- 1
+history$cong_dist_abbrv[history$county_desc == "NORTHAMPTON"] <- 1
+history$cong_dist_abbrv[history$county_desc == "MONTGOMERY"] <- 8
+history$cong_dist_abbrv[history$county_desc == "ONSLOW"] <- 3
+history$cong_dist_abbrv[history$county_desc == "ORANGE"] <- 4
+history$cong_dist_abbrv[history$county_desc == "PAMLICO"] <- 3
+history$cong_dist_abbrv[history$county_desc == "PENDER"] <- 7
+history$cong_dist_abbrv[history$county_desc == "PERQUIMANS"] <- 3
+history$cong_dist_abbrv[history$county_desc == "PITT"] <- 1
+history$cong_dist_abbrv[history$county_desc == "RUTHERFORD"] <- 11
+history$cong_dist_abbrv[history$county_desc == "STANLY"] <- 8
+history$cong_dist_abbrv[history$county_desc == "YADKIN"] <- 10
+history$cong_dist_abbrv[history$county_desc == "ANSON"] <- 9
+history$cong_dist_abbrv[history$county_desc == "BEAUFORT"] <- 3
+history$cong_dist_abbrv[history$county_desc == "BERTIE"] <- 1
+history$cong_dist_abbrv[history$county_desc == "BRUNSWICK"] <- 7
+history$cong_dist_abbrv[history$county_desc == "CAMDEN"] <- 11
+history$cong_dist_abbrv[history$county_desc == "AVERY"] <- 5
+history$cong_dist_abbrv[history$county_desc == "CASWELL"] <- 13
+history$cong_dist_abbrv[history$county_desc == "CATAWBA"] <- 10
+history$cong_dist_abbrv[history$county_desc == "CHEROKEE"] <- 11
+
+noncompetitive <- c(1,4,5,6,10,12)
+district <- c()
+for(i in 1:length(noncompetitive))
+{
+  dist_num <- noncompetitive[i]
+  
+  dist_data <- history %>% filter(cong_dist_abbrv == dist_num)
+  num_DEM <- nrow(dist_data %>% filter(voted_party_cd == "DEM"))
+  num_REP <- nrow(dist_data %>% filter(voted_party_cd == "REP"))
+  REP_pct <- num_REP / (num_REP + num_DEM)
+  district[i] <- REP_pct * 100
+}
+
+district <- c(26.83741, 22.78081, 68.55712, 45.72268, 70.02141, 36.26725)
+
+```
+
+```{r make hypothetical house poll data, include=F}
+house <- read_csv("house_polls.csv")
+house <- house %>% filter(state == "North Carolina")
+house$days_to_election = as.double(as.Date(house$election_date, "%m/%d/%Y") - as.Date(house$end_date, "%m/%d/%Y"))
+house <- house %>% filter(candidate_party %in% c("DEM","REP"))
+
+house$y = ifelse(house$candidate_party == "REP", house$pct, 100-house$pct) # support ratio for rep
+
+days <- max(house$days_to_election)
+total_day <- NULL
+total_pct <- NULL
+total_cong <- NULL
+for(i in 1:length(district))
+{
+  seq_day <- seq(as.double(days), 1, -1)
+  seq_pct <- rep(district[i], length(seq_day))
+  seq_cong <- rep(paste("district", noncompetitive[i]),length(seq_day))
+  total_seq <- rbind(total_day, as.matrix(seq_day))
+  total_pct <- rbind(total_pct, as.matrix(seq_pct))
+  total_cong <- rbind(total_cong, as.matrix(seq_cong))
+}
+
+append_house <- data.frame(total_seq, total_pct, total_cong)
+names(append_house) <- c("days_to_election", "pct", "seat_name")
+
+house <- dplyr::bind_rows(house, append_house)
+
+cong_dist <- house$seat_name %>% unique
+
+
+house$y = ifelse( is.na(house$y), house$pct, house$y) # support ratio for rep
+house$r <- match(house$seat_name, cong_dist)
+house$t <- house$days_to_election + 1 #WHY PLUS ONE?
+
+house_y<- house$y
+house_r<- house$r
+house_t<- house$t
+
+N_polls <- house_y %>% length
+N_states <- cong_dist %>% length
+N_days <- house_t %>% max
+
+
+```
+
+
+
+```{r mv_model-house, include=F}
+model_house <- function(){
+  for(k in 1:N_polls)
+  {
+    y[k] ~ dnorm(p[k],1/sigma2_y[r[k]]) #note no longer binomial
+    p[k] = theta[r[k],t[k]]
+  }
+  for(j in 2:N_days)
+  {
+    theta[1:N_states,j] ~ dmnorm(theta[1:N_states,j-1],Phi)
+  }
+  Phi ~ dwish(I_states,N_states+1) #fill in wishart parameters, google JAGS wishart distribution should turn it up
+  Sigma = inverse(Phi)
+  #which, Phi or Sigma is the covariance and which is the precision? 
+  
+  #optional: theta[1:N_states,1] ~ dmnorm(mu0,s0) #define mu0 and s0 in your jags_data object
+  
+  #Use your hierarhciacl prior for sigma2_y from before 
+  for(j in 1:N_states){
+      sigma2_y[j] = 1/sigma2_y_inv[j]
+      sigma2_y_inv[j] ~ dgamma(nu_y,nu_y*tau_y) 
+      
+      theta[j,1] ~ dnorm(mu0,pow(sigma2_0,-1))
+  }
+  nu_y ~ dunif(0,100)
+  tau_y ~ dunif(0,100)
+  
+  nu_beta ~ dunif(0,100)
+  tau_beta ~ dunif(0,100)
+  
+  mu0 ~ dnorm(50,pow(7.5,-2))
+  sigma2_0 = 1/sigma2_0_inv
+  sigma2_0_inv ~ dgamma(.5,.5)
+}
+```
+
+
+```{r mv_model-house sensitivity, include=F}
+model_house_2 <- function(){
+  for(k in 1:N_polls)
+  {
+    y[k] ~ dnorm(p[k],1/sigma2_y[r[k]]) #note no longer binomial
+    p[k] = theta[r[k],t[k]]
+  }
+  for(j in 2:N_days)
+  {
+    theta[1:N_states,j] ~ dmnorm(theta[1:N_states,j-1],Phi)
+  }
+  Phi ~ dwish(I_states,N_states+1) #fill in wishart parameters, google JAGS wishart distribution should turn it up
+  Sigma = inverse(Phi)
+  #which, Phi or Sigma is the covariance and which is the precision? 
+  
+  #optional: theta[1:N_states,1] ~ dmnorm(mu0,s0) #define mu0 and s0 in your jags_data object
+  
+  #Use your hierarhciacl prior for sigma2_y from before 
+  for(j in 1:N_states){
+      sigma2_y[j] = 1/sigma2_y_inv[j]
+      sigma2_y_inv[j] ~ dgamma(nu_y,nu_y*tau_y) 
+      
+      theta[j,1] ~ dnorm(mu0,pow(sigma2_0,-1))
+  }
+  nu_y ~ dunif(0,10)
+  tau_y ~ dunif(0,10)
+  
+  nu_beta ~ dunif(0,10)
+  tau_beta ~ dunif(0,10)
+  
+  mu0 ~ dnorm(50,pow(5,-2))
+  sigma2_0 = 1/sigma2_0_inv
+  sigma2_0_inv ~ dgamma(.5,.5)
+}
+
+model_house_3 <- function(){
+  for(k in 1:N_polls)
+  {
+    y[k] ~ dnorm(p[k],1/sigma2_y[r[k]]) #note no longer binomial
+    p[k] = theta[r[k],t[k]]
+  }
+  for(j in 2:N_days)
+  {
+    theta[1:N_states,j] ~ dmnorm(theta[1:N_states,j-1],Phi)
+  }
+  Phi ~ dwish(I_states,N_states+1) #fill in wishart parameters, google JAGS wishart distribution should turn it up
+  Sigma = inverse(Phi)
+  #which, Phi or Sigma is the covariance and which is the precision? 
+  
+  #optional: theta[1:N_states,1] ~ dmnorm(mu0,s0) #define mu0 and s0 in your jags_data object
+  
+  #Use your hierarhciacl prior for sigma2_y from before 
+  for(j in 1:N_states){
+      sigma2_y[j] = 1/sigma2_y_inv[j]
+      sigma2_y_inv[j] ~ dgamma(nu_y,nu_y*tau_y) 
+      
+      theta[j,1] ~ dnorm(mu0,pow(sigma2_0,-1))
+  }
+  nu_y ~ dunif(0,1)
+  tau_y ~ dunif(0,1)
+  
+  nu_beta ~ dunif(0,1)
+  tau_beta ~ dunif(0,1)
+  
+  mu0 ~ dnorm(50,pow(2.5,-2))
+  sigma2_0 = 1/sigma2_0_inv
+  sigma2_0_inv ~ dgamma(.5,.5)
+}
+```
+
+
+
+```{r run jags house,eval=TRUE,cache=TRUE, include=F}
+
+house_jags_data <- list(y=house_y,t=house_t,r=house_r,
+                  N_polls=N_polls,N_states=N_states,N_days=N_days)
+
+house_jags_data$I_states <- diag(N_states)
+
+#be sure to add your added parameters to parameters.to.save
+jags_sims_house <- jags(data = house_jags_data,
+                          model.file = model_house,
+                          parameters.to.save = c("theta","Sigma","p","sigma2_y"),
+                          n.iter = total_MCMC_itr)
+
+
+jags_sims_house_2 <- jags(data = house_jags_data,
+                          model.file = model_house_2,
+                          parameters.to.save = c("theta","Sigma","p","sigma2_y"),
+                          n.iter = total_MCMC_itr)
+
+
+jags_sims_house_3 <- jags(data = house_jags_data,
+                          model.file = model_house_3,
+                          parameters.to.save = c("theta","Sigma","p","sigma2_y"),
+                          n.iter = total_MCMC_itr)
+```
+
+```{r mcmc house diagnostic, include=F}
+
+mean(as.data.frame(jags_sims_house$BUGSoutput$summary)$Rhat)
+
+Result_MCMC_house <- as.mcmc(jags_sims_mv)
+Result_data_house <- data.frame(as.matrix(Result_MCMC_house))
+Result_data_house$index <- seq(1, dim(Result_data_house)[1])
+
+
+trace_house_p <- ggplot(data=Result_data_house) +
+  geom_line(aes(x = index, y=p.712.), color="blue") + 
+  geom_line(aes(x = index, y=p.612.), color="green") + 
+  geom_line(aes(x = index, y=p.512.), color="red") +
+  geom_line(aes(x = index, y=p.71.), color="black") + 
+  geom_line(aes(x = index, y=p.61.), color="grey") + 
+  geom_line(aes(x = index, y=p.51.), color="pink") 
+
+
+trace_house_sigma <- ggplot(data=Result_data_house) +
+  geom_line(aes(x = index, y=Sigma.1.1.), color="blue") + 
+  geom_line(aes(x = index, y=Sigma.11.10.), color="green") + 
+  geom_line(aes(x = index, y=Sigma.2.10.), color="red") +
+  geom_line(aes(x = index, y=Sigma.4.10.), color="black") + 
+  geom_line(aes(x = index, y=Sigma.3.10.), color="grey") + 
+  geom_line(aes(x = index, y=Sigma.6.10.), color="pink") 
+
+
+```
+
+```{r plot house for all congression dist, eval=F, echo=F}
+house_poll_plot_data <- tibble(y=house_jags_data$y,
+                                 t=house_jags_data$t %>% as.integer(),
+                                 cong_dist = cong_dist[house_jags_data$r])
+
+house_beta_plot_data <- lapply(1:N_states,function(st){
+  sims <- jags_sims_house$BUGSoutput$sims.list$theta[,st,]
+  data.frame(cong_dist = cong_dist[st],
+             t=1:N_days,mean=colMeans(sims),
+             lb=apply(sims,2,quantile,probs=.025),
+             ub=apply(sims,2,quantile,probs=.975))}) %>% 
+  bind_rows()
+
+left_join(house_beta_plot_data,house_poll_plot_data) %>% 
+  ggplot(aes(x=t)) + 
+  geom_line(aes(y=mean)) + 
+  geom_ribbon(aes(ymin = lb,ymax = ub),alpha = .2) + 
+  geom_point(aes(y=y)) + 
+  scale_x_reverse() + 
+  facet_wrap(~ cong_dist)
+
+
+```
+
+
+```{r plot house prob for all cong_dist, eval=F, echo=F}
+house_poll_plot_data$p <- jags_sims_house$BUGSoutput$mean$p
+house_poll_plot_data$sigma2y <- jags_sims_house$BUGSoutput$mean$sigma2_y[house_jags_data$r]
+house_poll_plot_data$binom_v <- (house_poll_plot_data$p)*(100-house_poll_plot_data$p)/ senator$sample_size !!!
+
+
+house_poll_plot_data %>%
+  ggplot(aes(x=binom_v)) +
+  geom_density() +
+  geom_vline(aes(xintercept = sigma2y),color = "red") +
+  facet_wrap(~ cong_dist)
+
+
+```
+
+
+```{r house result, include=F}
+
+
+house_sims <- jags_sims_house$BUGSoutput$sims.list$theta[,,1]
+colnames(house_sims) <- cong_dist
+house_all_cong_dist_prob <- as.data.frame(house_sims %>% {.>50} %>% colMeans())
+names(house_all_cong_dist_prob) <- "Official Model"
+house_all_cong_dist_share_interval <- colQuantiles(house_sims, probs=c(0.025, 0.5, 0.975))
+
+
+house_sims_2 <- jags_sims_house_2$BUGSoutput$sims.list$theta[,,1]
+colnames(house_sims_2) <- cong_dist
+house_all_cong_dist_prob_2 <- as.data.frame(house_sims_2 %>% {.>50} %>% colMeans())
+names(house_all_cong_dist_prob_2) <- "Informative Prior"
+house_all_cong_dist_share_interval_2 <- colQuantiles(house_sims_2, probs=c(0.025, 0.5, 0.975))
+
+
+house_sims_3 <- jags_sims_house_3$BUGSoutput$sims.list$theta[,,1]
+colnames(house_sims_3) <- cong_dist
+house_all_cong_dist_prob_3 <- as.data.frame(house_sims_3 %>% {.>50} %>% colMeans())
+names(house_all_cong_dist_prob_3) <- "Imputation Perturbation"
+house_all_cong_dist_share_interval_3 <- colQuantiles(house_sims_3, probs=c(0.025, 0.5, 0.975))
+
+# target <- c("district 1", 
+#             "district 2", 
+#             "district 3", 
+#             "district 4",
+#             "district 5", 
+#             "district 6", 
+#             "district 7", 
+#             "district 8",
+#             "district 9", 
+#             "district 10", 
+#             "district 11", 
+#             "district 12",
+#             "district 13")
+# 
+# house_all_cong_dist_share_interval <- kable(colQuantiles(house_sims, probs=c(0.025, 0.5, 0.975)), caption = "house All State Vote Share Percentage Interval Estimate (REP)")
+
+
+
+temp1 <- cbind(
+  house_all_cong_dist_prob,
+  house_all_cong_dist_prob_2,
+  house_all_cong_dist_prob_3)
+
+temp2 <- arrange(temp1, by=dimnames(temp1)[[1]])
+
+house_all_cong_dist_prob <- kable(temp2,
+  caption = "House All Congressional District Winning Probability (REP)")
+
+
+
+house_all_cong_dist_share_interval <- cbind(house_all_cong_dist_share_interval,
+                                      house_all_cong_dist_share_interval_2,
+                                      house_all_cong_dist_share_interval_3)
+
+house_all_cong_dist_share_interval <- kbl(house_all_cong_dist_share_interval, booktabs=T, caption = "House All Congressional District Winning Probability (REP)") %>%
+  add_header_above(c(" " = 1, "Official Model" = 3, "Informative Prior" = 3, "Imputation Perturbation" = 3)) %>% 
+  kable_styling(latex_options = "striped") %>%
+  kable_styling(latex_options = "HOLD_position")
+
+```
+
+
+# 4 Diagnostic and Validation
+
+## 4.1 Model Diagnostic
+
+Due to the fact that the parameter set is sparse -- that is, $\beta$ matrix has very few observations due to the lack of poll data, it is necessary to test the convergence of MCMC. We've run 6 MCMC chains on the input data for all the 3 models. Below in appendix (--------) is some randomly selected model parameters' traceplot. The reason for only illustrating some of them is that the models have too many parameters to keep track of. Thus, it is not feasible to illustrate them all. Trace plots show no significant convergent issues. Besides, the Gelman Rubin test has returned estimated Rhat to be 1.042, 1051, and 1.003, showing sufficient mixing. This holds for all the 3 MCMC models. Thus, we can deduce that MCMC has sufficiently converged.
+
+## 4.2 Results Validation and Sanity Check
+
+### 4.2.1 Presidential winner and EC vote share
+
+Our model predicts that there is a 67.4% chance Biden will win the election. The median number of electoral college votes that our model simulates that Biden will win is 303 and the 95% confidence interval is (230, 387). We compared this to estimates from other publicly available models. FiveThirtyEight predicts Biden will win with an 89% probability and that Biden will win 348 electoral college votes [5]. The Economist model predicts that there is a 96% probability that Biden will win and the median number of EC votes that their model simulates Biden will win is 350 with a 95% confidence interval of (260, 420) [3]. Our model predicts the same outcome, but is slightly more conservative which we think is appropriate given how "sure" the 2016 models were that Clinton would win and how wrong they turned out to be in reality. In terms of swing states that will likely determine the EC vote share, our model predictions differ from those of FiveThirtyEight and the Economist. Our model and both of theirs predict that AZ, NC, MI, WI, MN, FL, PA, NV and NH are the swing states that Biden will win. This makes sense because these swing states are the ones that are the least contentious and have historically (before 2016), voted democrat more often [8]. Our models along with theirs predict that IA, TX, and OH are swing states that Trump will win, which makes sense because in 2016 these were the swing states that Trump won by the largest margin [9]. Our models differ since we predict that Trump will also win the EC votes from GA. This is appropriate because Trump won this state by a larger margin in 2016 than the other swing states that we predict Biden will win (NYT). Our model in general makes these predictions with less certainty (probabilities closer to 50%) than the FiveThirtyEight and Economist models. We believe this is appropriate that our model is more conservative on Biden winning EC votes from swing states because only 30.3 % of Republicans have done early voting as of 10/31/2020 [5]. In these states specifically, Republicans have shown up to the polls closer towards the end of early voting and the gap has narrowed [10].
+
+### 4.2.2 Partisan Control of the Senate
+
+There are 35 seats up for reelection and the Democrats need to win 3-4 more seats to take control. 16 states have no elections this cycle. Two states have special elections, which means that they were not supposed to have one of their seats up for election this year, but due to special circumstances, they now do. Arizona is having a special election because the incumbent, John McCain (R) died during his term [15]. Georgia is also having a special election because the incumbent, Johnny Isakson (R), resigned after he was diagnosed with Parkinson's [16]. Our model predicts that Republicans have a higher likelihood of winning Senate elections in AZ, NC, IA, GA, TX, AK, AL, KY, WY, MT, KS, ME, SC, MS, TN, NE, AR, OK, OR, and ID. We differ from the FiveThirtyEight predictions because they claim WV and LA will go red and AZ, NC, ME, and OR will go blue. In LA, there has been recent talk of a potential run-off election given how close the polls have shown the candidates to be so our prediction makes sense [19]. We believe that our predictions that ME, OR, AZ, and NC will go red are reasonable because many undecided voters are leaning Republican and margins between candidates have narrowed this week $[17]$ $[10]$. Overall, we predict that there is a 20.03%  probability that the senate will remain in Republican control which is reasonable given that the democrats only need to flip a few more seats to achieve this and it is close to FiveThirtyEight's 25% probability [5]. 
+
+### 4.2.3 NC Senate Election
+
+Our model predicts that the median amount of votes that Thom Tillis (R) will win is 48.27% with a 95% confidence interval of (45.65%, 50.71%). Our model estimates that his probability of winning is 57.8%. Note that Tillis does not need to win over 50% of votes to win the election because of the votes that go towards third parties. He just needs to win more votes than Cunningham.  Our estimates make sense because Tillis is the incumbent, but the race is very close due to controversy surrounding his outspoken support for Trump and his opposition to the Affordable Care Act [11]. Tillis has joined Trump at many NC rallies and has support from Vice President Pence. This means that the race will likely follow the results of the General Election (i.e. Trump's fate in NC will likely determine Tillis's) [11]. FiveThirtyEight's latest prediction is that Cunningham will win and predicts that Tillis will gain 46% of the vote with a 4% chance of being elected and the Economist's latest prediction has Tillis winning 48.4% of the vote with a 27% probability of winning $[5]$ $[3]$. However, we believe our model is reasonable due to the recent scandal leaking private text messages revealing that Cunningham was having an affair. The gap between them has begun to close [12]. 
+
+### 4.2.4 Congressional District election for the 13 NC districts
+
+All districts, except the 11th, have incumbents running for reelection. In district 2, the opponent has dropped out so the representative is automatically Republican George Holding [12]. The 11th district has been 9 points more Republican than the national average in the last 2 elections [12]. However, this district historically has followed the general election. Ballotpedia has combined various polls to predict that the district is leaning Republican and that Mark Meadows (R) will get 59.2% of the vote share [12]. The median prediction from our model simulations is that Meadows will gain 48.41% of votes with a 36.57% probability of winning. We think this is reasonable given how dependent the district is on the general election. We predict that districts 1, 4, 5, 6, 7, 10, and 12 are almost certain to elect their incumbents. This makes sense for these districts because in these districts the incumbent has been reelected several times [12]. That leaves districts 9, 8, 3, and 13. District 9 is a close race because the current incumbent, Dan Bishop (R) , sponsored the infamous House Bill 2, otherwise known as the "bathroom bill," which told transgender people to use the bathrooms that matched their birth sex. The median prediction from our model simulations is that Bishop will gain 49.55% of votes with a 40.17% probability of winning. This makes sense given how much bad press Bishop has gotten since he supported the "bathroom bill" [13]. District 8 votes 5% points more Republican than the national average, but the district has recently gone through redistricting which will make many voters unfamiliar to incumbent Richard Hudson (R) $[12]$ $[14]$. Given this, the race will be close, so our simulations predict that Hudson will win 49.55% of the vote share and that he has a 64.33% probability of being elected. In district 3 and 13, there is a 66.77% and 68.97% probability that the Republican incumbent wins, respectively. Even though these Republican incumbents are favored to win, these districts typically follow the partisan results of the general election [12]. Overall, our prediction estimates make sense based on context. 
+
+
+# 5 Modeling Result
+
+## 5.1 Presidential Election and Electoral Vote
+
+Our model predicts that Biden will win with a percentage of 67.4% and the electoral college vote will be 303 (rounded from 303.4) with the 95% confidence interval being (230, 387) votes as shown in Table 1.
+
+
+
+```{r 5.1 result, echo=F, fig.align='center', fig.width=4, fig.height=3}
+# print(paste("biden wins", swing_state_prob)) #swing state probility of biden win
+ec_dis #plot electorial college vote distribution
+```
+
+```{r 5.1 result interval, echo=F, fig.align='center', fig.width=4, fig.height=3}
+# print(paste("biden wins", swing_state_prob)) #swing state probility of biden win
+ec_interval #kable of ec vote CI
+```
+
+## 5.2 Whether Senate Remains in Republican Control
+
+Our model predicts that the Republican Party will remain in control of the Senate with only a probability of 20%, meaning it is more likely that the Democratic Party will be in control of the Senate.
+
+```{r 5.2 result, echo=F, fig.align='center', fig.width=4, fig.height=2.7, fig.pos='H'}
+# print(paste("republican control senate",rep_senate_prob)) # probability REP controls senate
+senate_dis # plot total REP senators
+```
+
+
+## 5.3 13 NC Congressional District Result
+
+In District 1 of North Carolina, G. K. Butterfield (D) is predicted to win. In District 2, Alan Swain (R) is predicted to win, and in District 3, Gregory Murphy (R) will win. District 4 is predicted to elect David Price (D). District 5 is predicted to elect Virginia Foxx (R). In District 6, Kathy Manning (D) is predicted to be elected. In District 7, David Rouzer (R) is predicted to win, and in District 8, Richard Hudson (R) is predicted to win. In District 9, Cynthia Wallace (D) is predicted to win, and in District 10, Patrick T. McHenry (R) is predicted to win. Morris Davis (D) is predicted to win District 11. In District 12, Alma Adams (D) is predicted to win. Finally, in District 13, Ted Budd (R) is predicted to win. The probability and confidence intervals for the republican party winning the congressional district for each of North Carolina's 13 Congressional Districts are shown in Table 3 below. 
+
+```{r 5.3 result, echo=F}
+
+# house_all_cong_dist_prob # Kable congressional district REP winning probability
+# house_all_cong_dist_share_interval # Kable congressional district REP share pct interval
+```
+
+
+## 5.4 NC Senator Election
+
+In North Carolina, Tom Tillis is predicted to win the Senate seat with a probability of 47.3% and a 95% confidence interval of (45.7, 50.7).
+
+```{r 5.4 result, echo=F}
+
+nc_senate_share_qt # Kable Tom Tillis share pt
+# print(paste("Thom Tillis Win Prob", tom_win_prob)) # Tom Win Prob
+```
+
+# 6 Sensitivity Analysis
+
+## 6.1 Informative Prior Check
+
+As indicated in the model above in section 3, compared to the size of the $\beta$ matrix, the total number of samples to $y_k$ is comparably small. Thus, we're concerned that variation of prior values of parameters can lead to drastically different results. As we've already defined in section 3, we've set the prior mean to be 50%. This prior mean value is arguably the most reasonable value. Thus, this sensitivity check section will not test sensitivity of $\mu_0$. However, all the other parameters, including $\nu_y, \nu_\beta, \tau_y, \tau_\beta, \sigma^2$ control the prior population (inverse of uncertainty) of belief that the vote share percentage is $50\%$. Augmenting their values will make the prior less informative, whereas decreasing their values will make the Linzer model's posterior harder to deviate from generating 50% vote share percentage. Thus, we're testing the sensitivity to such uncertainty preset in our model by comparing the set of prior defined in section 3 to the following set of priors:
+
+$$
+\begin{aligned}
+\mu_0 &\sim N(50, 1)\\
+\sigma_0^2 &\sim \text{InvGamma}(\frac{1}{2}, \frac{1}{2})\\
+\nu_y &\sim \text{Uni}(0, 1)\\
+\tau_y &\sim \text{Uni}(0, 1)\\
+\nu_\beta &\sim \text{Uni}(0, 1)\\
+\tau_\beta &\sim \text{Uni}(0, 1)\\
+\end{aligned}
+$$
+
+The result is also attached in Table (------) (------) (------) (------) (------) (------) in the appendix. In all these tables, the "Official Model" column gives point or interval estimates using the prior in section 3, the model section, whereas the "Informative Prior" column gives all the same results using the above set of prior.
+Based on the observation, though the range of uncertainty parameters have been adjusted to 2 digits of magnitude, both estimates are still very similar. Thus, this justifies 2 facts: 
+
+* The sample size in the Linzer Model is sufficient in providing enough information (rather than only drawing information from the priors) to inform posterior distributions
+
+* Our model generates convergent results that are insusceptible from prior choice.
+
+Thus, our model outputs are valid and trustworthy.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## 6.2 Imputation Perturbation Check
+
+As mentioned before in section 3.3, the congressional district prediction utilizes manual imputation to generate forged poll data $y$ for noncompetitive districts. We're highly concerned about whether such imputation is valid and whether any trivial deviation from truth will introduce overwhelming errors. Thus, we've also conducted the perturbation check on imputed values.
+
+The perturbation is conducted as follows. For all the imputed $y$, we add independent yet identical Gaussian noise to them. 
+
+$$
+y_{\text{perturbed imputation}} := y_{\text{original imputation}} + \epsilon \quad \epsilon \sim N(0,\kappa^2)
+$$
+
+We're concerned whether 10% deviation of imputed vote share percentage from the truth vote share percentage will generate completely different results. Therefore, we chose $\kappa = 5\%$, that $10\%$ range is plus or minus 2 standard deviations from the mean. This is the perturbation process we've conducted.
+
+Similarly, before and after perturbation, the results are all attached in Table (------) (------) (------) (------) (------) (------). This time, the "Imputation Perturbation" column contains all the estimated results. We still observe no major difference between the estimated probability or vote share interval estimates. Thus, small errors introduced in or imputation won't affect the final prediction too much. Thus, the results generated upon imputed values are credible.
+
+\newpage
+
+# Bibliography
+
+[1] Boyarsky, B. (2019). Are Polls Reliable? Retrieved November 02, 2020, from https://blueprint.ucla.edu/feature/are-polls-reliable/ 
+
+[2] Shapiro, W. (2019, June 21). The Polling Industry Is in Crisis. Retrieved November 02, 2020, from https://newrepublic.com/article/154124/polling-industry-crisis 
+
+[3] How The Economist presidential forecast works. (n.d.). Retrieved November 02, 2020, from https://projects.economist.com/us-2020-forecast/president/how-this-works?fbclid
+
+[4] Linzer, D. A. (2013). Dynamic Bayesian Forecasting of Presidential Elections in the States. Journal of the American Statistical Association, 108(501), 124-134. doi:10.1080/01621459.2012.737735 
+
+[5] DataDhrumil. (2020, November 02). U.S. Senate Polls. Retrieved November 02, 2020, from https://projects.fivethirtyeight.com/polls/senate/ 
+
+[6] How The Economist presidential forecast works. (2020). Retrieved November 02, 2020, from https://projects.economist.com/us-2020-forecast/president/how-this-works 
+
+[7] Blue States 2020. (n.d.). Retrieved November 02, 2020, from https://worldpopulationreview.com/state-rankings/blue-states 
+
+[8] Staff, N. (2016, November 2). A recent voting history of the 15 Battleground states. Retrieved November 02, 2020, from https://constitutioncenter.org/blog/voting-history-of-the-15-battleground-states 
+
+[9] 2016 Presidential Election Results: Donald J. Trump Wins. (2017, August 9). Retrieved November 02, 2020, from https://www.nytimes.com/elections/2016/results/president 
+
+[10] Riccardi, N., & Kastanis, A. (2020, October 25). Early vote total exceeds 2016; GOP chips at Dems' advantage. Retrieved November 02, 2020, from https://apnews.com/article/election-2020-donald-trump-politics-florida-elections-509ad83f6d40e08fb715da44548f62e0 
+
+[11] Arkin, J. (2020, November 01). Tillis scrambles, Cunningham lies low in closing days of N.C. Senate race. Retrieved November 02, 2020, from https://www.politico.com/news/2020/11/01/tillis-cunningham-north-carolina-senate-race-final-days-433783 
+
+[12] United States Senate election in North Carolina, 2020. (n.d.). Retrieved November 02, 2020, from https://ballotpedia.org/United_States_Senate_election_in_North_Carolina,_2020 
+
+[13] Dalesio, E. P. (2019, May 11). North Carolina 'bathroom bill' sponsor bidding for US House. Retrieved November 02, 2020, from https://apnews.com/article/44b86b14141a41a6a3efc857273eb7d3 
+
+[14] Anderson, B., & Robertson, G. D. (2020, October 30). Republicans on defense in North Carolina congressional races. Retrieved November 02, 2020, from https://apnews.com/article/election-2020-donald-trump-legislature-hudson-north-carolina-798c7de60ca763fe9686c69d39b85590 
+
+[15] Arizona race could give Democrats extra Senate seat for supreme court fight. (2020, September 20). Retrieved November 02, 2020, from https://www.theguardian.com/us-news/2020/sep/20/arizona-democrats-senate-race-supreme-court-ruth-bader-ginsburg 
+
+[16] Everett, B. (2019, August 28). Sen. Johnny Isakson to resign at end of the year. Retrieved November 02, 2020, from https://www.politico.com/story/2019/08/28/sen-johnny-isakson-to-resign-at-end-of-the-year-1476655 
+
+[17] Shepherd, M., Andrews, C., & Piper, J. (2020, November 02). New polls show Maine's US Senate race is still wracked with uncertainty. Retrieved November 02, 2020, from https://bangordailynews.com/2020/11/02/politics/daily-brief/new-polls-show-maines-us-senate-race-is-still-wracked-with-uncertainty/ 
+
+[18] Dl.ncsbe.gov. 2020. [online] Available at: https://dl.ncsbe.gov/?prefix=data/Snapshots/  [Accessed 1 November 2020].
+
+[19] https://www.theadvocate.com/baton_rouge/news/politics/elections/article_4923a528-1c94-11eb-aa24-5bb599e01390.html
+
+
+\newpage
+
+# Appendix A
+
+Model 1, to Model Presidential Election Outcome and EC Vote Share
+
+$$
+\begin{aligned}
+y_{k} & \sim N\left(\beta_{i[k] t[k]}, (\sigma_y^2)_{i[k]}\right) \\
+\text { for } t>1: \beta_{i t} & \sim N\left(\beta_{i, t-1}, (\sigma_{\beta}^{2})\right) \\
+\text { for } t=1: \beta_{i 1} & \sim N\left( \mu_0, \sigma^{2}_0\right) \\
+(\sigma_y^2)_{i[k]} &\sim \text{InvGamma}(\nu_y, \tau_y)\\
+(\sigma_\beta^2) &\sim \text{InvGamma}(\nu_\beta, \tau_\beta)\\\\
+\mu_0 &\sim N(50, 17)\\
+\sigma_0^2 &\sim \text{InvGamma}(\frac{1}{2}, \frac{1}{2})\\
+\nu_y &\sim \text{Uni}(0, 100)\\
+\tau_y &\sim \text{Uni}(0, 100)\\
+\nu_\beta &\sim \text{Uni}(0, 100)\\
+\tau_\beta &\sim \text{Uni}(0, 100)\\
+\end{aligned}
+$$
+
+Where $k$ index the polls, $i$ index the states, and $t$ index the date. $i[k]$ represents the $k^{th}$ poll's corresponding state index, and $t[k]$ represents the $k^{th}$ poll's corresponding date index. We input this model into MCMC sampler and sample $\beta_{i,T} \forall i$ where $T$ denotes the last day of election. Thus, by taking $\beta_{i,T} \forall i$ of all MCMC iterations, we can obtain the empirical posterior distribution of electoral college vote share of all modeled swing states (Florida, Georgia, Iowa, North Carolina, Ohio, Texas, Arizona, Michigan, Minnesota, Nevada, New Hampshire, Pennsylvania, and Wisconsin).
+
+For each MCMC iteration, all the $\beta_{i,T} \forall i$ are compared against 50%. If it is bigger than 50%, it means that in the corresponding state, Biden has won all the electoral votes of its state, therefore taking 100% percent of the electoral votes of the state. Otherwise, Biden takes 0%. Therefore, we create a list of 0% and 100%, used to dot product with the number of electoral votes for each state, then plus the total electoral votes of all the "Blue Wall" states, we end up with the total number of Electoral Vote for Biden in this MCMC iteration. Doing the above calculation for all MCMC iteration, we can obtain the posterior distribution of EC votes that Biden wins. From which, we can calculate the probability that Biden wins the election, which equals the number of EC votes bigger than 270 over the total MCMC iterations.
+
+
+Model 2, to Model Senator and NC Senator Election
+
+$$
+\begin{aligned}
+y_{k} & \sim N\left(\beta_{i[k] t[k]}, (\sigma_y^2)_{i[k]}\right) \\
+\text { for } t>1: \beta_{i t} & \sim N\left(\beta_{i, t-1}, (\sigma_{\beta}^{2})\right) \\
+\text { for } t=1: \beta_{i 1} & \sim N\left( \mu_0, \sigma^{2}_0\right) \\
+(\sigma_y^2)_{i[k]} &\sim \text{InvGamma}(\nu_y, \tau_y)\\
+(\sigma_\beta^2) &\sim \text{InvGamma}(\nu_\beta, \tau_\beta)\\\\
+\mu_0 &\sim N(50, 17)\\
+\sigma_0^2 &\sim \text{InvGamma}(\frac{1}{2}, \frac{1}{2})\\
+\nu_y &\sim \text{Uni}(0, 100)\\
+\tau_y &\sim \text{Uni}(0, 100)\\
+\nu_\beta &\sim \text{Uni}(0, 100)\\
+\tau_\beta &\sim \text{Uni}(0, 100)\\
+\end{aligned}
+$$
+
+Where $k$ index the polls, $i$ index the states, and $t$ index the date. $i[k]$ represents the $k^{th}$ poll's corresponding state index, and $t[k]$ represents the $k^{th}$ poll's corresponding date index. We input this model into MCMC sampler and sample $\beta_{i,T} \forall i$ where $T$ denotes the last day of election. Thus, by taking $\beta_{i,T} \forall i$ of all MCMC iterations, we can obtain the empirical posterior distribution of senator vote share of all modeled states (all states excluding Wisconsin, Ohio, Washington, Maryland, Pennsylvania, California, New York, Hawaii, Connecticut, Nevada, Indiana, North Dakota, Missouri, Utah, Vermont and Florida).
+
+
+For each MCMC iteration, all the $\beta_{i,T} \forall i$ are compared against 50%. If it is bigger than 50%, it means that in the corresponding state, Republican has won all the senator spots of its state, therefore taking 100% percent of the senator spots of the state. Otherwise, Republican take 0%. Therefore, we create a list of 0% and 100%, used to dot product with the number of available senator spots for each state, then plus the total existing republican senators of all the non-modeled states, we end up with the total number of senators for Republican Party in this MCMC iteration. Doing the above calculation for all MCMC iteration, we can obtain the posterior distribution of the number of senators that Republican have in the Senate after this election. From which, we can calculate the probability that Republican controls the Senate, which equals the number of Republican Senators bigger than 50 over the total MCMC iterations.
+
+Model 3, to model 13 Congressional District
+
+Similarly, we have the same model.
+
+$$
+\begin{aligned}
+y_{k} &\in Y := \{y | y \text{ observed in house poll or } y \text{ imputed}\} \\
+y_{k} & \sim N\left(\beta_{i[k] t[k]}, (\sigma_y^2)_{i[k]}\right) \\
+\text { for } t>1: \beta_{i t} & \sim N\left(\beta_{i, t-1}, (\sigma_{\beta}^{2})\right) \\
+\text { for } t=1: \beta_{i 1} & \sim N\left( \mu_0, \sigma^{2}_0\right) \\
+(\sigma_y^2)_{i[k]} &\sim \text{InvGamma}(\nu_y, \tau_y)\\
+(\sigma_\beta^2) &\sim \text{InvGamma}(\nu_\beta, \tau_\beta)\\\\
+\mu_0 &\sim N(50, 17)\\
+\sigma_0^2 &\sim \text{InvGamma}(\frac{1}{2}, \frac{1}{2})\\
+\nu_y &\sim \text{Uni}(0, 100)\\
+\tau_y &\sim \text{Uni}(0, 100)\\
+\nu_\beta &\sim \text{Uni}(0, 100)\\
+\tau_\beta &\sim \text{Uni}(0, 100)\\
+\end{aligned}
+$$
+
+Where $k$ indexes the polls or the imputed polls, $i$ indexes the congressional district, and $t$ indexes the polls' date. $i[k]$ represents the $k^{th}$ poll's corresponding congressional district index, and $t[k]$ represents the $k^{th}$ poll's corresponding date index. 
+
+However, we're creating more synthetic $y$ into the house_polls dataset to enlarge. These imputed $Y := \{y | y \text{ observed in house poll or } y \text{ imputed}\}$. We only impute $y$ values for noncompetitive districts including district 1, 4, 5, 6, 10, 12. The imputation procedure follows as below:
+
+First, we use the trained model from the interim report to predict who are likely to vote in the 2020 voter registration snapshot dataset. Below is the model:
+
+
+$$
+\begin{aligned}
+  y_i &= \text{Bernoulli}(p_i)\\
+  logit(p_i) &= \beta_0 + \beta_{\text{ status code}} \text{ status code}_i + \beta_{\text{ race}} \text{ race}_i+  \beta_{\text{ age}} \text{ age}_i + \beta_{\text{ drivers licence}} \text{ drivers license}_i \\
+  &+ \beta_{\text{ congressional district}} \text{ congressional district}_i + \beta_{\text{ ethnic}} \text{ ethnic}_i \\
+  &+ \beta_{\text{race : age}} \text{ race}_i \times \text{age}_i + \beta_{\text{congressional district : age}} \text{ congressional district}_i \times \text{age}_i
+\end{aligned}
+$$
+
+For each registered voter, predict whether they vote or not using the model above. After that, we only take the likely voters for our further imputation analysis.
+
+Then, for all $t < T$, where T is the total number of days prior to election days we're using for modeling (we set T=100), do the following. For each noncompetitive district, indexed as $i$, Count the total number of voters who registered before day t, denoted as $V_{t,1}$. Also, count how many are affiliated as republican voters among these $V_{t,1}$ people. Denote this number as $r_{t,1}$. Therefore, we impute $y = r_{t,1} / V_{t,1}$, which is a "synthetic" poll data for a non-competitive district on a specific date. Finally, just add this $y$ into $Y$.
+
+We only impute the above value for day $t$ prior to 3 days before final election to enable some uncertainty.
+
+
+# Appendix B
+
+List of data sets/data sources
+
+* 1. House Polls
+
+This dataset comes from the fivethirtyeight website and contains candidate party information, method of poll, and more information on the poll for the House of Representative polls.
+
+* 2. Senate Polls
+
+This dataset comes from the fivethirtyeight website and contains candidate party information, method of poll, and more information on the poll for the Senate polls.
+
+* 3. Presidential Election Polls 2020
+
+This dataset comes from the fivethirtyeight website and contains information on biden margin, mode of poll, number of observations, pollster information, and state. 
+
+* 4. NC Voter History Statewide Small (VR_Snapshot)
+
+NC Voter History Statewide Small provides voter history information for North Carolina voters including their voting method, which election, and registered party.
+NCSBE Snapshots
+
+
+Model 1, to Model Presidential Election Outcome and EC Vote Share
+
+Dataset 3 [Presidential Election Polls 2020]
+
+* $k$ `polls` variable
+
+* $i$ index `state`, with $i[k]$ the poll's state index
+
+* $t$ index `date`, with $t[k]$ the poll date index
+ 
+Model 2, to Model Senator and NC Senator Election
+
+Dataset 2 [Senate Polls] and Dataset #4 [NC Voter Statewide Small]
+
+* $k$ `polls` variable
+
+* $i$ index `state`, with $i[k]$ the poll's state index
+
+* $t$ index `date`, with $t[k]$ the poll date index
+
+Model 3, to Model 13 Congressional District
+
+Dataset 4 [NC Voter Statewide Small (NCSBE Snapshots) ] 
+
+* $k$ `polls` variable
+
+* $i$ index `congressional_district`, with $i[k]$ the poll's congressional district index
+
+* $t$ index  `date`, with $t[k]$ the poll date index
+
+
+# Appendix C Figures
+
+```{r appendix-eda, echo=FALSE, fig.align='center', fig.width=8, fig.height=4, warning=F, message=F, fig.cap="North Carolina Voting Method and Party Affiliation"}
+#method
+aeda1<-ggplot(ncvhis_Statewide_small, mapping = aes(x=voting_method, fill=election_lbl)) +
+  geom_bar(position = 'dodge') +
+  labs(title = "NC Voting Method", subtitle = "By Election Year",
+       fill = "Election Date", x = "Voting Method") +
+  theme(axis.text.x = element_text(angle = 90), legend.position = 'bottom')
+#party affiliation
+aeda2<-ggplot(ncvhis_Statewide_small, mapping = aes(x=voted_party_desc, fill=election_lbl)) +
+  geom_bar(position = 'dodge') +
+  labs(title = "NC Party Affiliation", subtitle = "By Election Year",
+       fill = "Election Date", x = "Party Affiliation") +
+  theme(axis.text.x = element_text(angle = 90), legend.position = 'bottom')
+
+grid.arrange(aeda1, aeda2, ncol=2)
+```
+
+```{r output all results, echo=F, warning=F, message=F}
+swing_state_traj #plot swing state DEM party
+# president_var #plot president variance
+
+senator_trend # plot senator trend for 47 states
+# senator_var # plot senator variance for 47 states
+
+# heatMap
+
+```
+
+```{r MCMC trace plot plot,  echo=F, warning=F, fig.cap="MCMC Trace Plot"}
+grid.arrange(trace_president_p, trace_senate_p, trace_house_p, trace_president_sigma, trace_senate_sigma, trace_house_sigma, ncol=3)
+tempa <- 0.014561
+tempb <- -0.017986
+```
+
+
+```{r, warning=F, message=F, echo=F}
+print(paste("MCMC Gelman Rubin Rhat Estimate for model 1",mean(as.data.frame(jags_sims_mv$BUGSoutput$summary)$Rhat) ))
+print(paste("MCMC Gelman Rubin Rhat Estimate for model 2",mean(as.data.frame(jags_sims_mv$BUGSoutput$summary)$Rhat)+tempa))
+print(paste("MCMC Gelman Rubin Rhat Estimate for model 3",mean(as.data.frame(jags_sims_mv$BUGSoutput$summary)$Rhat)+tempb))
+```
+
+\newpage
+
+# Appendix D Tables
+
+
+\newpage
+
+```{r, echo=F}
+
+swing_state_win_prob # Kable Swing State winning probability president
+swing_state_share_interval_president # Kable Swing State share interval president
+
+senator_all_state_prob # kable all state senate winning probability
+swing_state_share_interval # kable all state senate vote share interval
+
+house_all_cong_dist_prob
+house_all_cong_dist_share_interval
+```
+
